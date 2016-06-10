@@ -7,6 +7,7 @@ package com.library.jobsandlisteners.job;
 
 import com.library.datamodel.Constants.ProcessingUnitState;
 import com.library.datamodel.Json.AdFetchRequest;
+import com.library.httpconnmanager.HttpClientPool;
 import com.library.scheduler.JobsData;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
@@ -58,18 +59,12 @@ public class AdFetchJob implements Job, InterruptableJob, ExecutableJob {
 
         logger.debug("New AdFetch Request: " + jsonRequest);
 
-        Object response = GeneralUtils.sendJsonRequest(jobsData.getCentralServerJsonUrl(), jsonRequest);
-        logger.debug("Simulating sending request and getting response...");
-        //Object response = "Hello there, this is the response from our dummy server.......";
+        String remoteUrl = jobsData.getRemoteUrl();
+        HttpClientPool clientPool = jobsData.getHttpClientPool();
 
-        if (response == null || response.equals("")) {
-            logger.warn("Null response from Central Server.");
-        } else {
-            String jsonStringResponse = (String) response;
-            logger.info("Response from Central Server: " + jsonStringResponse);
+        String response = clientPool.sendRemoteRequest(jsonRequest, remoteUrl, "username", "password");
 
-            //process response here
-        }
+        logger.info("Response from Central Server: " + response);
 
     }
 

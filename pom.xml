@@ -76,6 +76,14 @@
             <version>9.2.3.v20140905</version>
             <type>jar</type>
         </dependency>-->
+        
+        <dependency>
+            <groupId>com.sghttpconnectionmanager</groupId>
+            <artifactId>sghttpconnectionmanager</artifactId>
+            <version>1.0</version>
+            <type>jar</type>
+        </dependency>
+        
         <dependency>
             <groupId>com.sgsharedinterfce</groupId>
             <artifactId>sgsharedinterface</artifactId>
