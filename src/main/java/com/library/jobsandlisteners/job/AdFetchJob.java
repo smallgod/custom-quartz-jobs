@@ -10,6 +10,8 @@ import com.library.datamodel.Json.AdFetchRequest;
 import com.library.httpconnmanager.HttpClientPool;
 import com.library.scheduler.JobsData;
 import com.library.sgsharedinterface.ExecutableJob;
+import com.library.sgsharedinterface.Remote;
+import com.library.sgsharedinterface.SharedAppConfigIF;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
 import org.quartz.Job;
@@ -59,10 +61,12 @@ public class AdFetchJob implements Job, InterruptableJob, ExecutableJob {
 
         logger.debug("New AdFetch Request: " + jsonRequest);
 
-        String remoteUrl = jobsData.getRemoteUrl();
+        SharedAppConfigIF appConfigs = jobsData.getAppConfigs();
         HttpClientPool clientPool = jobsData.getHttpClientPool();
 
-        String response = clientPool.sendRemoteRequest(jsonRequest, remoteUrl, "username", "password");
+        Remote remoteUnit = appConfigs.getAdCentralUnit();
+
+        String response = clientPool.sendRemoteRequest(jsonRequest, remoteUnit);
 
         logger.info("Response from Central Server: " + response);
 
