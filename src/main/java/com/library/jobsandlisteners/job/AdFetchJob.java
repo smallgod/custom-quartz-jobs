@@ -8,9 +8,8 @@ package com.library.jobsandlisteners.job;
 import com.library.datamodel.Constants.ProcessingUnitState;
 import com.library.datamodel.Json.AdFetchRequest;
 import com.library.httpconnmanager.HttpClientPool;
-import com.library.scheduler.JobsData;
+import com.library.configs.JobsConfig;
 import com.library.sgsharedinterface.ExecutableJob;
-import com.library.sgsharedinterface.Remote;
 import com.library.sgsharedinterface.SharedAppConfigIF;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
@@ -22,6 +21,7 @@ import org.quartz.JobExecutionException;
 import org.quartz.UnableToInterruptJobException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.library.sgsharedinterface.RemoteRequest;
 
 /**
  * The class doing the work
@@ -40,7 +40,7 @@ public class AdFetchJob implements Job, InterruptableJob, ExecutableJob {
 
         JobDataMap jobsDataMap = jec.getMergedJobDataMap();
 
-        JobsData jobsData = (JobsData) jobsDataMap.get(jobName);
+        JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
 
         //logger.debug("size of jobMap: " + jobMap.size());
         /*logger.debug("sleeping for 30s at: " + new DateTime().getSecondOfDay());
@@ -64,7 +64,7 @@ public class AdFetchJob implements Job, InterruptableJob, ExecutableJob {
         SharedAppConfigIF appConfigs = jobsData.getAppConfigs();
         HttpClientPool clientPool = jobsData.getHttpClientPool();
 
-        Remote remoteUnit = appConfigs.getAdCentralUnit();
+        RemoteRequest remoteUnit = appConfigs.getAdCentralUnit();
 
         String response = clientPool.sendRemoteRequest(jsonRequest, remoteUnit);
 
