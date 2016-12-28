@@ -19,18 +19,17 @@ import org.quartz.JobDetail;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
 import org.quartz.UnableToInterruptJobException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import com.library.sgsharedinterface.RemoteRequest;
+import com.library.utilities.LoggerUtil;
 
 /**
  * The class doing the work
  *
  * @author smallgod
  */
-public class AdFetchJob implements Job, InterruptableJob, ExecutableJob {
+public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
-    private static final Logger logger = LoggerFactory.getLogger(AdFetchJob.class);
+    private static final LoggerUtil logger = new LoggerUtil(AdSchedulerJob.class);
 
     @Override
     public void execute(JobExecutionContext jec) throws JobExecutionException {

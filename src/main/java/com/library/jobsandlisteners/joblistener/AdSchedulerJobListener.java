@@ -6,26 +6,24 @@
 
 package com.library.jobsandlisteners.joblistener;
 
+import com.library.utilities.LoggerUtil;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
 import org.quartz.JobListener;
 import org.quartz.JobDataMap;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  *
  * @author smallgod
  */
-public class AdFetchJobListener  implements JobListener {
+public class AdSchedulerJobListener  implements JobListener {
     
-    private static final Logger logger = LoggerFactory.getLogger(AdFetchJobListener.class);
-
-    private static final String LISTENER_NAME = "Retries_JOBLISTENER";
+    private static final LoggerUtil logger = new LoggerUtil(AdSchedulerJobListener.class);
+    private static final String LISTENER_NAME = "AdScheduler_JOB_LISTENER";
     
     @Override
     public String getName() {
-        return AdFetchJobListener.LISTENER_NAME;
+        return AdSchedulerJobListener.LISTENER_NAME;
     }
 
     @Override
