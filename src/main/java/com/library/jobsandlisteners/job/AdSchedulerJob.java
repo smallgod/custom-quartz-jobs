@@ -14,7 +14,11 @@ import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
 import com.library.datamodel.Json.GenerateIdRequest;
+import com.library.datamodel.Json.GeneratedIdResponse;
+import com.library.datamodel.Json.AdSetupRequestWrapper;
 import com.library.datamodel.Json.PlayerDetail;
+import com.library.datamodel.Json.ProgramDetail;
+import com.library.datamodel.Json.ResourceDetail;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
@@ -42,43 +46,70 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
     //this method is for testing purpose only, delete after
     @Override
     public void execute(JobExecutionContext jec) throws JobExecutionException {
-        
+
         //assume we are generating 2 file ids only
         //we should also send ids we think exist to the dsm bridge service to confirm for us, so that if they don't exist, new ids are generated
-
         JobDetail jobDetail = jec.getJobDetail();
         String jobName = jobDetail.getKey().getName();
 
         JobDataMap jobsDataMap = jec.getMergedJobDataMap();
 
         JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
+        Map<String, RemoteRequest> remoteUnits = jobsData.getRemoteRequestUnits();
+
+        RemoteRequest dsmRemoteUnit = remoteUnits.get(NamedConstants.DSM_UNIT_REQUEST);
+
         HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
-        
+
         //generate file ids
         GenerateIdRequest generateIdRequest = new GenerateIdRequest();
-        
+
         GenerateIdRequest.Params params = generateIdRequest.new Params();
         params.setId(GenerateId.FILE_ID.getValue());
         params.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
         params.getNumOfIds();
-        
+
         generateIdRequest.setMethodName(APIMethodName.GENERATE_ID.getValue());
         generateIdRequest.setParams(params);
-        
+
+        String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
+
+        String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
+
+        GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
+        List<String> generatedIdList = genIdResponse.getGeneratedIdList();
+
+        //update today's resources in DB with the generated Ids for each resource before resources are uploaded to the server
+        //updateDb
         //generate task ids
-        
-        
         //send requests
-        
+        //
+        //
+        //program detail
+        ProgramDetail progDetail = createProgramDetail();
+
+        //resource details
+        ResourceDetail resDetail = createResourceDetail();
+
+        //player details
         PlayerDetail playerDetail = createPlayerDetail();
 
+        AdSetupRequestWrapper wrapper = new AdSetupRequestWrapper();
+        wrapper.setMethodName(APIMethodName.ADVERT_SETUP.getValue());
+        wrapper.setPlayerDetail(playerDetail);
+        wrapper.setProgramDetail(progDetail);
+        wrapper.setResourceDetail(resDetail);
+
+        String jsonReq = GeneralUtils.convertToJson(wrapper, AdSetupRequestWrapper.class);
+
+        String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
+
+        logger.debug("Mega wrapper Response: " + response);
+
+        /*
         String jsonRequest = GeneralUtils.convertToJson(playerDetail, PlayerDetail.class);
 
         logger.debug("Player Detail Request: " + jsonRequest);
-
-        Map<String, RemoteRequest> remoteUnits = jobsData.getRemoteRequestUnits();
-
-        RemoteRequest dsmRemoteUnit = remoteUnits.get(NamedConstants.DSM_UNIT_REQUEST);
 
         String response = clientPool.sendRemoteRequest(jsonRequest, dsmRemoteUnit);
 
@@ -95,6 +126,65 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         String response3 = clientPool.sendRemoteRequest(programDetail, dsmRemoteUnit);
 
         logger.info("ProgramDetail Response from Server: " + response3);
+         */
+    }
+
+    ResourceDetail createResourceDetail() {
+
+        ResourceDetail resourceDetail = new ResourceDetail();
+        ResourceDetail.Data data = resourceDetail.new Data();
+
+        ResourceDetail.Data.Resources resources = data.new Resources();
+        resources.setResourceDetail("restaurant_front.mp4");
+        resources.setResourceId("5480212808");
+        resources.setResourceType("VIDEO");
+        resources.setStatus("OLD");
+
+        List<ResourceDetail.Data.Resources> resourcesList = new ArrayList<>();
+
+        data.setDisplayDate("2017-01-13");
+        data.setResources(resourcesList);
+
+        return resourceDetail;
+
+    }
+
+    ProgramDetail createProgramDetail() {
+
+        ProgramDetail progDetail = new ProgramDetail();
+        ProgramDetail.Data data = progDetail.new Data();
+
+        ProgramDetail.Data.Program prog = data.new Program();
+        prog.setDisplayLayout("3SPLIT");
+        prog.setProgramId("19011480463480900778");
+        prog.setStatus("NEW");
+
+        ProgramDetail.Data.Program.DisplayTime displayTime1 = prog.new DisplayTime();
+        displayTime1.setStarttime("21:06:49");
+        displayTime1.setStoptime("21:07:49");
+
+        ProgramDetail.Data.Program.DisplayTime displayTime2 = prog.new DisplayTime();
+        displayTime2.setStarttime("21:06:49");
+        displayTime2.setStoptime("21:07:49");
+
+        List<ProgramDetail.Data.Program.DisplayTime> displayTimes = new ArrayList<>();
+        displayTimes.add(displayTime1);
+        displayTimes.add(displayTime2);
+
+        List<Long> resourceIdList = new ArrayList<>();
+        resourceIdList.add(1580212807L);
+        resourceIdList.add(6290434822L);
+
+        prog.setResourceIdList(resourceIdList);
+        prog.setDisplayTimesList(displayTimes);
+
+        List<ProgramDetail.Data.Program> programIds = new ArrayList<>();
+        programIds.add(prog);
+
+        data.setDisplayDate("2017-01-13");
+        data.setProgramIds(programIds);
+
+        return progDetail;
     }
 
     PlayerDetail createPlayerDetail() {
@@ -104,7 +194,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         playerDetail.setMethodName(APIMethodName.PLAYER_DETAIL.getValue());
 
         PlayerDetail.Data data = playerDetail.new Data();
-        data.setDisplayDate("2017-01-10");
+        data.setDisplayDate("2017-01-14");
 
         //program IDs
         List<Long> programIdList = new ArrayList<>();
@@ -115,9 +205,11 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         //Terminals
         PlayerDetail.Data.TerminalDetail terminal = data.new TerminalDetail();
         terminal.setProgramIdList(programIdList);
-        terminal.setTaskId("83939282829");
+        terminal.setTaskId(839392829);
         terminal.setTaskName("First Task");
         terminal.setTerminalId("99877373738333");
+        terminal.setTerminalHeight(1920);
+        terminal.setTerminalWidth(1080);
 
         List<PlayerDetail.Data.TerminalDetail> terminalList = new ArrayList<>();
         //adding only one terminal for now
