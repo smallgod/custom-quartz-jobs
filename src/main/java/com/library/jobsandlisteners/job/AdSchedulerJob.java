@@ -18,7 +18,6 @@ import com.library.datamodel.Json.GeneratedIdResponse;
 import com.library.datamodel.Json.AdSetupRequestWrapper;
 import com.library.datamodel.Json.PlayerDetail;
 import com.library.datamodel.Json.ProgramDetail;
-import com.library.datamodel.Json.ResourceDetail;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
@@ -89,7 +88,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         ProgramDetail progDetail = createProgramDetail();
 
         //resource details
-        ResourceDetail resDetail = createResourceDetail();
+        //ResourceDetail resDetail = createResourceDetail();
 
         //player details
         PlayerDetail playerDetail = createPlayerDetail();
@@ -98,7 +97,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         wrapper.setMethodName(APIMethodName.ADVERT_SETUP.getValue());
         wrapper.setPlayerDetail(playerDetail);
         wrapper.setProgramDetail(progDetail);
-        wrapper.setResourceDetail(resDetail);
+        //wrapper.setResourceDetail(resDetail);
 
         String jsonReq = GeneralUtils.convertToJson(wrapper, AdSetupRequestWrapper.class);
 
@@ -129,25 +128,25 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
          */
     }
 
-    ResourceDetail createResourceDetail() {
-
-        ResourceDetail resourceDetail = new ResourceDetail();
-        ResourceDetail.Data data = resourceDetail.new Data();
-
-        ResourceDetail.Data.Resources resources = data.new Resources();
-        resources.setResourceDetail("restaurant_front.mp4");
-        resources.setResourceId("5480212808");
-        resources.setResourceType("VIDEO");
-        resources.setStatus("OLD");
-
-        List<ResourceDetail.Data.Resources> resourcesList = new ArrayList<>();
-
-        data.setDisplayDate("2017-01-13");
-        data.setResources(resourcesList);
-
-        return resourceDetail;
-
-    }
+//    ResourceDetail createResourceDetail() {
+//
+//        ResourceDetail resourceDetail = new ResourceDetail();
+//        ResourceDetail.Data data = resourceDetail.new Data();
+//
+//        ResourceDetail.Data.Resources resources = data.new Resources();
+//        resources.setResourceDetail("restaurant_front.mp4");
+//        resources.setResourceId("5480212808");
+//        resources.setResourceType("VIDEO");
+//        resources.setStatus("OLD");
+//
+//        List<ResourceDetail.Data.Resources> resourcesList = new ArrayList<>();
+//
+//        data.setDisplayDate("2017-01-13");
+//        data.setResources(resourcesList);
+//
+//        return resourceDetail;
+//
+//    }
 
     ProgramDetail createProgramDetail() {
 
@@ -171,11 +170,18 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         displayTimes.add(displayTime1);
         displayTimes.add(displayTime2);
 
-        List<Long> resourceIdList = new ArrayList<>();
-        resourceIdList.add(1580212807L);
-        resourceIdList.add(6290434822L);
+        List<ProgramDetail.Data.Program.Resources> resourcesList = new ArrayList<>();
+        
+        
+        ProgramDetail.Data.Program.Resources resources = prog.new  Resources();
+        resources.setResourceDetail("restaurant_front.mp4");
+        resources.setResourceId("5480212808");
+        resources.setResourceType("VIDEO");
+        resources.setStatus("OLD");
+        
+        resourcesList.add(resources);
 
-        prog.setResourceIdList(resourceIdList);
+        prog.setResources(resourcesList);
         prog.setDisplayTimesList(displayTimes);
 
         List<ProgramDetail.Data.Program> programIds = new ArrayList<>();
