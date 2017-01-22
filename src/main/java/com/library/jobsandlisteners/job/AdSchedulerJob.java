@@ -15,9 +15,10 @@ import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
 import com.library.datamodel.Json.GenerateIdRequest;
 import com.library.datamodel.Json.GeneratedIdResponse;
-import com.library.datamodel.Json.AdSetupRequestWrapper;
-import com.library.datamodel.Json.PlayerDetail;
-import com.library.datamodel.Json.ProgramDetail;
+import com.library.datamodel.Json.AdSetupRequest;
+import com.library.datamodel.Json.AdSetupRequest.ProgramDetail;
+import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.DisplayTime;
+import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.Resources;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
@@ -78,6 +79,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
         List<String> generatedIdList = genIdResponse.getGeneratedIdList();
 
+        AdSetupRequest adRequest = new AdSetupRequest();
+        adRequest.setMethodName(APIMethodName.BULK_ADVERT_SETUP.getValue());
+
         //update today's resources in DB with the generated Ids for each resource before resources are uploaded to the server
         //updateDb
         //generate task ids
@@ -85,28 +89,24 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         //
         //
         //program detail
-        ProgramDetail progDetail = createProgramDetail();
+        List<AdSetupRequest.ProgramDetail> progDetailList = createProgramDetailList(adRequest);
 
         //resource details
         //ResourceDetail resDetail = createResourceDetail();
-
         //player details
-        PlayerDetail playerDetail = createPlayerDetail();
+        List<AdSetupRequest.PlayerDetail> playerDetailList = createPlayerDetailList(adRequest);
 
-        AdSetupRequestWrapper wrapper = new AdSetupRequestWrapper();
-        wrapper.setMethodName(APIMethodName.ADVERT_SETUP.getValue());
-        wrapper.setPlayerDetail(playerDetail);
-        wrapper.setProgramDetail(progDetail);
-        //wrapper.setResourceDetail(resDetail);
+        adRequest.setPlayerDetail(playerDetailList);
+        adRequest.setProgramDetail(progDetailList);
 
-        String jsonReq = GeneralUtils.convertToJson(wrapper, AdSetupRequestWrapper.class);
+        String jsonReq = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
 
         String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
 
         logger.debug("Mega wrapper Response: " + response);
 
         /*
-        String jsonRequest = GeneralUtils.convertToJson(playerDetail, PlayerDetail.class);
+        String jsonRequest = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
 
         logger.debug("Player Detail Request: " + jsonRequest);
 
@@ -114,9 +114,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         logger.info("Response from Central Server: " + response);
 
-        String resourceDetail = "{\"method\":\"RESOURCE_DETAIL\",\"data\":[{\"display_date\":\"2017-01-10\",\"resources\":[{\"resource_id\":5480212808,\"resource_detail\":\"restaurant_front.mp4\",\"resource_type\":\"VIDEO\",\"status\":\"OLD\"},{\"resource_id\":2481434800,\"resource_detail\":\"This is Header text [DEL] This is scrolling text here..\",\"resource_type\":\"TEXT\",\"status\":\"NEW\"},{\"resource_id\":2481434800,\"resource_detail\":\"swimming pool.jpg\",\"resource_type\":\"IMAGE\",\"status\":\"NEW\"}]}]}";
+        String resourceDetail = "{\"method\":\"RESOURCE_DETAIL\",\"playerDetail\":[{\"display_date\":\"2017-01-10\",\"resources\":[{\"resource_id\":5480212808,\"resource_detail\":\"restaurant_front.mp4\",\"resource_type\":\"VIDEO\",\"status\":\"OLD\"},{\"resource_id\":2481434800,\"resource_detail\":\"This is Header text [DEL] This is scrolling text here..\",\"resource_type\":\"TEXT\",\"status\":\"NEW\"},{\"resource_id\":2481434800,\"resource_detail\":\"swimming pool.jpg\",\"resource_type\":\"IMAGE\",\"status\":\"NEW\"}]}]}";
 
-        String programDetail = "{\"method\":\"PROGRAM_DETAIL\",\"data\":[{\"display_date\":\"2017-01-10\",\"program_ids\":[{\"program_id\":19011480463480900778,\"status\":\"UPDATED\",\"display_layout\":\"3SPLIT\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[1580212807,6290434822,2481434800]},{\"program_id\":97011480463480900778,\"status\":\"NEW\",\"display_layout\":\"TEXT_ONLY\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[5480212808]}]}]}";
+        String programDetail = "{\"method\":\"PROGRAM_DETAIL\",\"playerDetail\":[{\"display_date\":\"2017-01-10\",\"program_ids\":[{\"program_id\":19011480463480900778,\"status\":\"UPDATED\",\"display_layout\":\"3SPLIT\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[1580212807,6290434822,2481434800]},{\"program_id\":97011480463480900778,\"status\":\"NEW\",\"display_layout\":\"TEXT_ONLY\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[5480212808]}]}]}";
 
         String response2 = clientPool.sendRemoteRequest(resourceDetail, dsmRemoteUnit);
 
@@ -131,76 +131,83 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 //    ResourceDetail createResourceDetail() {
 //
 //        ResourceDetail resourceDetail = new ResourceDetail();
-//        ResourceDetail.Data data = resourceDetail.new Data();
+//        ResourceDetail.PlayerDetail playerDetail = resourceDetail.new PlayerDetail();
 //
-//        ResourceDetail.Data.Resources resources = data.new Resources();
+//        ResourceDetail.PlayerDetail.Resources resources = playerDetail.new Resources();
 //        resources.setResourceDetail("restaurant_front.mp4");
 //        resources.setResourceId("5480212808");
 //        resources.setResourceType("VIDEO");
 //        resources.setStatus("OLD");
 //
-//        List<ResourceDetail.Data.Resources> resourcesList = new ArrayList<>();
+//        List<ResourceDetail.PlayerDetail.Resources> resourcesList = new ArrayList<>();
 //
-//        data.setDisplayDate("2017-01-13");
-//        data.setResources(resourcesList);
+//        playerDetail.setDisplayDate("2017-01-13");
+//        playerDetail.setResources(resourcesList);
 //
 //        return resourceDetail;
 //
 //    }
+    /**
+     * 
+     * @param adRequest
+     * @return 
+     */
+    List<AdSetupRequest.ProgramDetail> createProgramDetailList(AdSetupRequest adRequest) {
 
-    ProgramDetail createProgramDetail() {
+        AdSetupRequest.ProgramDetail progDetail = adRequest.new ProgramDetail();
 
-        ProgramDetail progDetail = new ProgramDetail();
-        ProgramDetail.Data data = progDetail.new Data();
-
-        ProgramDetail.Data.Program prog = data.new Program();
+        ProgramDetail.Program prog = progDetail.new Program();
         prog.setDisplayLayout("3SPLIT");
         prog.setProgramId("19011480463480900778");
         prog.setStatus("NEW");
 
-        ProgramDetail.Data.Program.DisplayTime displayTime1 = prog.new DisplayTime();
+        DisplayTime displayTime1 = prog.new DisplayTime();
         displayTime1.setStarttime("21:06:49");
         displayTime1.setStoptime("21:07:49");
 
-        ProgramDetail.Data.Program.DisplayTime displayTime2 = prog.new DisplayTime();
+        DisplayTime displayTime2 = prog.new DisplayTime();
         displayTime2.setStarttime("21:06:49");
         displayTime2.setStoptime("21:07:49");
 
-        List<ProgramDetail.Data.Program.DisplayTime> displayTimes = new ArrayList<>();
+        List<DisplayTime> displayTimes = new ArrayList<>();
         displayTimes.add(displayTime1);
         displayTimes.add(displayTime2);
 
-        List<ProgramDetail.Data.Program.Resources> resourcesList = new ArrayList<>();
-        
-        
-        ProgramDetail.Data.Program.Resources resources = prog.new  Resources();
+        List<Resources> resourcesList = new ArrayList<>();
+
+        Resources resources = prog.new Resources();
         resources.setResourceDetail("restaurant_front.mp4");
         resources.setResourceId("5480212808");
         resources.setResourceType("VIDEO");
         resources.setStatus("OLD");
-        
+
         resourcesList.add(resources);
 
         prog.setResources(resourcesList);
         prog.setDisplayTimesList(displayTimes);
 
-        List<ProgramDetail.Data.Program> programIds = new ArrayList<>();
+        List<ProgramDetail.Program> programIds = new ArrayList<>();
         programIds.add(prog);
 
-        data.setDisplayDate("2017-01-13");
-        data.setProgramIds(programIds);
+        progDetail.setDisplayDate("2017-01-22");
+        progDetail.setProgramIds(programIds);
 
-        return progDetail;
+        List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
+        //add only a single day's ProgramDetail
+        programDetailList.add(progDetail);
+
+        return programDetailList;
     }
 
-    PlayerDetail createPlayerDetail() {
+    /**
+     * 
+     * @param adRequest
+     * @return 
+     */
+    List<AdSetupRequest.PlayerDetail> createPlayerDetailList(AdSetupRequest adRequest) {
 
-        PlayerDetail playerDetail = new PlayerDetail();
-
-        playerDetail.setMethodName(APIMethodName.PLAYER_DETAIL.getValue());
-
-        PlayerDetail.Data data = playerDetail.new Data();
-        data.setDisplayDate("2017-01-14");
+        AdSetupRequest.PlayerDetail playerDetail = adRequest.new PlayerDetail();
+        playerDetail.setDisplayDate("2017-01-22");
 
         //program IDs
         List<Long> programIdList = new ArrayList<>();
@@ -209,7 +216,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         programIdList.add(913838330L);
 
         //Terminals
-        PlayerDetail.Data.TerminalDetail terminal = data.new TerminalDetail();
+        AdSetupRequest.PlayerDetail.TerminalDetail terminal = playerDetail.new TerminalDetail();
         terminal.setProgramIdList(programIdList);
         terminal.setTaskId(839392829);
         terminal.setTaskName("First Task");
@@ -217,19 +224,18 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         terminal.setTerminalHeight(1920);
         terminal.setTerminalWidth(1080);
 
-        List<PlayerDetail.Data.TerminalDetail> terminalList = new ArrayList<>();
+        List<AdSetupRequest.PlayerDetail.TerminalDetail> terminalList = new ArrayList<>();
         //adding only one terminal for now
         terminalList.add(terminal);
 
-        data.setTerminals(terminalList);
+        playerDetail.setTerminals(terminalList);
 
-        List<PlayerDetail.Data> dataList = new ArrayList<>();
-        //add only a single day's data
-        dataList.add(data);
+        List<AdSetupRequest.PlayerDetail> playerDetailList = new ArrayList<>();
+        //add only a single day's playerDetail
+        playerDetailList.add(playerDetail);
 
-        playerDetail.setData(dataList);
-
-        return playerDetail;
+        //adRequest.setPlayerDetail(playerDetailList);
+        return playerDetailList;
     }
 
     public void executeOLD(JobExecutionContext jec) throws JobExecutionException {
