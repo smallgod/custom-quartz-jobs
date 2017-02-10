@@ -10,6 +10,7 @@ import com.library.datamodel.Json.AdFetchRequest;
 import com.library.httpconnmanager.HttpClientPool;
 import com.library.configs.JobsConfig;
 import com.library.datamodel.Constants.APIMethodName;
+import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
@@ -19,6 +20,11 @@ import com.library.datamodel.Json.AdSetupRequest;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.DisplayTime;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.Resources;
+import com.library.datamodel.model.v1_0.AdClient;
+import com.library.datamodel.model.v1_0.AdProgram;
+import com.library.datamodel.model.v1_0.AdSchedule;
+import com.library.datamodel.model.v1_0.AdScreen;
+import com.library.dbadapter.DatabaseAdapter;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
@@ -29,10 +35,14 @@ import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
 import org.quartz.UnableToInterruptJobException;
 import com.library.sgsharedinterface.RemoteRequest;
+import com.library.utilities.DateUtils;
 import com.library.utilities.LoggerUtil;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.joda.time.LocalDate;
 
 /**
  * The class doing the work
@@ -55,77 +65,148 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         JobDataMap jobsDataMap = jec.getMergedJobDataMap();
 
         JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
-        Map<String, RemoteRequest> remoteUnits = jobsData.getRemoteRequestUnits();
 
-        RemoteRequest dsmRemoteUnit = remoteUnits.get(NamedConstants.DSM_UNIT_REQUEST);
-
+        RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
+        RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
         HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
+        DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
 
-        //generate file ids
-        GenerateIdRequest generateIdRequest = new GenerateIdRequest();
+        //Fetch pending ad programs from DB
+        //Fetch Records from AdScheduler Table for date (today) and with to_update field == False
+        //If found, get screen_id / terminal_id for this pending entry
+        //If found, do the needful and send request to DSM
+        List< String> columnsToFetch = new ArrayList<>();
+        columnsToFetch.add("ALL");
 
-        GenerateIdRequest.Params params = generateIdRequest.new Params();
-        params.setId(GenerateId.FILE_ID.getValue());
-        params.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
-        params.getNumOfIds();
+        Map< String, Object> pendingAdsProps = new HashMap<>();
+        pendingAdsProps.put("isToUpdate", Boolean.FALSE);
+        pendingAdsProps.put("displayDate", DateUtils.getDateNow());
 
-        generateIdRequest.setMethodName(APIMethodName.GENERATE_ID.getValue());
-        generateIdRequest.setParams(params);
+        List< AdSchedule> fetchedSchedules = databaseAdapter.fetchBulkWithSingleValues(EntityName.AD_SCHEDULE, pendingAdsProps, columnsToFetch);
 
-        String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
+        if (!fetchedSchedules.isEmpty()) {
 
-        String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
+            for (AdSchedule adSchedule : fetchedSchedules) {
 
-        GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
-        List<String> generatedIdList = genIdResponse.getGeneratedIdList();
+                AdScreen adScreen = adSchedule.getAdScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
+                LocalDate displayDate = adSchedule.getDisplayDate();
+                String scheduleString = adSchedule.getScheduleDetail();
+                long scheduleId = adSchedule.getScheduleId();
 
-        AdSetupRequest adRequest = new AdSetupRequest();
-        adRequest.setMethodName(APIMethodName.BULK_ADVERT_SETUP.getValue());
+                String[] progTimeArray = scheduleString.trim().split("\\s*;\\s*"); // ["764::4563::T", "905::2355::F"]
 
-        //update today's resources in DB with the generated Ids for each resource before resources are uploaded to the server
-        //updateDb
-        //generate task ids
-        //send requests
-        //
-        //
-        //program detail
-        List<AdSetupRequest.ProgramDetail> progDetailList = createProgramDetailList(adRequest);
+                logger.debug("ProgTimeArray: " + Arrays.toString(progTimeArray));
 
-        //resource details
-        //ResourceDetail resDetail = createResourceDetail();
-        //player details
-        List<AdSetupRequest.PlayerDetail> playerDetailList = createPlayerDetailList(adRequest);
+                List< Integer> displayTimeList = new ArrayList<>();
+                List< Integer> progEntityIdList = new ArrayList<>();
 
-        adRequest.setPlayerDetail(playerDetailList);
-        adRequest.setProgramDetail(progDetailList);
+                for (String element : progTimeArray) {
+                    int progEntityId = Integer.parseInt(element.split("\\s*::\\s*")[0]);
+                    int displayTime = Integer.parseInt(element.split("\\s*::\\s*")[1]);
 
-        String jsonReq = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
+                    displayTimeList.add(displayTime);
+                    progEntityIdList.add(progEntityId);
+                }
 
-        String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
+                Map<String, List<Object>> programProps = new HashMap<>();
 
-        logger.debug("Mega wrapper Response: " + response);
+                List<Object> displayDates = new ArrayList<>();
+                displayDates.add(DateUtils.getDateNow()); //putting it in the List<Object> for the sake
+                
+                programProps.put("id", new ArrayList<Object>(progEntityIdList));
+                programProps.put("displayDate", displayDates);
 
-        /*
-        String jsonRequest = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
+                //Fetch Program details to check which ones we need to generate ids for
+                List< AdProgram> fetchedPrograms = databaseAdapter.fetchBulkWithMultipleValues(EntityName.AD_PROGRAM, programProps, columnsToFetch);
+                
+                int numOfIdsToGenerate = 0;
+                List<String> existingProgIds = new ArrayList<>();
+                for (AdProgram adProgram : fetchedPrograms){
+                    
+                    AdClient client = adProgram.getAdClient();
+                    Boolean isDSMUpdated = adProgram.isIsDSMUpdated();
+                    int adLength = adProgram.getAdLength();
+                    numOfIdsToGenerate = adProgram.getNumOfFileResources();
+                }
 
-        logger.debug("Player Detail Request: " + jsonRequest);
+                //generate file ids
+                GenerateIdRequest generateIdRequest = new GenerateIdRequest();
+                List<GenerateIdRequest.Params> params = new ArrayList<>();
 
-        String response = clientPool.sendRemoteRequest(jsonRequest, dsmRemoteUnit);
+                GenerateIdRequest.Params fileIdParams = generateIdRequest.new Params();
+                fileIdParams.setId(GenerateId.FILE_ID.getValue());
+                fileIdParams.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
+                fileIdParams.setNumOfIds(numOfIdsToGenerate);
+                params.add(fileIdParams);
+                
+                GenerateIdRequest.Params progIdParams = generateIdRequest.new Params();
+                progIdParams.setId(GenerateId.PROGRAM_ID.getValue());
+                progIdParams.setIdTypeToGenerate(GenerateIdType.INTEGER.getValue());
+                progIdParams.setNumOfIds(numOfIdsToGenerate);
+                params.add(progIdParams);
 
-        logger.info("Response from Central Server: " + response);
+                generateIdRequest.setMethodName(APIMethodName.GENERATE_ID.getValue());
+                generateIdRequest.setParams(params);
 
-        String resourceDetail = "{\"method\":\"RESOURCE_DETAIL\",\"playerDetail\":[{\"display_date\":\"2017-01-10\",\"resources\":[{\"resource_id\":5480212808,\"resource_detail\":\"restaurant_front.mp4\",\"resource_type\":\"VIDEO\",\"status\":\"OLD\"},{\"resource_id\":2481434800,\"resource_detail\":\"This is Header text [DEL] This is scrolling text here..\",\"resource_type\":\"TEXT\",\"status\":\"NEW\"},{\"resource_id\":2481434800,\"resource_detail\":\"swimming pool.jpg\",\"resource_type\":\"IMAGE\",\"status\":\"NEW\"}]}]}";
+                String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
 
-        String programDetail = "{\"method\":\"PROGRAM_DETAIL\",\"playerDetail\":[{\"display_date\":\"2017-01-10\",\"program_ids\":[{\"program_id\":19011480463480900778,\"status\":\"UPDATED\",\"display_layout\":\"3SPLIT\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[1580212807,6290434822,2481434800]},{\"program_id\":97011480463480900778,\"status\":\"NEW\",\"display_layout\":\"TEXT_ONLY\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[5480212808]}]}]}";
+                String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
+                                                                                    
+                GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
+                List<String> generatedIdList = genIdResponse.getGeneratedIdList();
 
-        String response2 = clientPool.sendRemoteRequest(resourceDetail, dsmRemoteUnit);
+                AdSetupRequest adRequest = new AdSetupRequest();
+                adRequest.setMethodName(APIMethodName.BULK_ADVERT_SETUP.getValue());
 
-        logger.info("ResourceDetail Response from Server: " + response2);
+                //update today's resources in DB with the generated Ids for each resource before resources are uploaded to the server
+                //updateDb
+                //generate task ids
+                //send requests
+                //
+                //
+                //program detail
+                List<AdSetupRequest.ProgramDetail> progDetailList = createProgramDetailList(adRequest);
 
-        String response3 = clientPool.sendRemoteRequest(programDetail, dsmRemoteUnit);
+                //resource details
+                //ResourceDetail resDetail = createResourceDetail();
+                //player details
+                List<AdSetupRequest.PlayerDetail> playerDetailList = createPlayerDetailList(adRequest);
 
-        logger.info("ProgramDetail Response from Server: " + response3);
-         */
+                adRequest.setPlayerDetail(playerDetailList);
+                adRequest.setProgramDetail(progDetailList);
+
+                String jsonReq = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
+
+                String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
+
+                logger.debug("Mega wrapper Response: " + response);
+
+                /*
+                String jsonRequest = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
+
+                logger.debug("Player Detail Request: " + jsonRequest);
+
+                String response = clientPool.sendRemoteRequest(jsonRequest, dsmRemoteUnit);
+
+                logger.info("Response from Central Server: " + response);
+
+                String resourceDetail = "{\"method\":\"RESOURCE_DETAIL\",\"playerDetail\":[{\"display_date\":\"2017-01-10\",\"resources\":[{\"resource_id\":5480212808,\"resource_detail\":\"restaurant_front.mp4\",\"resource_type\":\"VIDEO\",\"status\":\"OLD\"},{\"resource_id\":2481434800,\"resource_detail\":\"This is Header text [DEL] This is scrolling text here..\",\"resource_type\":\"TEXT\",\"status\":\"NEW\"},{\"resource_id\":2481434800,\"resource_detail\":\"swimming pool.jpg\",\"resource_type\":\"IMAGE\",\"status\":\"NEW\"}]}]}";
+
+                String programDetail = "{\"method\":\"PROGRAM_DETAIL\",\"playerDetail\":[{\"display_date\":\"2017-01-10\",\"program_ids\":[{\"program_id\":19011480463480900778,\"status\":\"UPDATED\",\"display_layout\":\"3SPLIT\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[1580212807,6290434822,2481434800]},{\"program_id\":97011480463480900778,\"status\":\"NEW\",\"display_layout\":\"TEXT_ONLY\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[5480212808]}]}]}";
+
+                String response2 = clientPool.sendRemoteRequest(resourceDetail, dsmRemoteUnit);
+
+                logger.info("ResourceDetail Response from Server: " + response2);
+
+                String response3 = clientPool.sendRemoteRequest(programDetail, dsmRemoteUnit);
+
+                logger.info("ProgramDetail Response from Server: " + response3);
+                 */
+            }
+
+        } else {
+            logger.info("No Pending AdSchedules where fetched from the database");
+        }
     }
 
 //    ResourceDetail createResourceDetail() {
@@ -148,9 +229,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 //
 //    }
     /**
-     * 
+     *
      * @param adRequest
-     * @return 
+     * @return
      */
     List<AdSetupRequest.ProgramDetail> createProgramDetailList(AdSetupRequest adRequest) {
 
@@ -200,9 +281,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
     }
 
     /**
-     * 
+     *
      * @param adRequest
-     * @return 
+     * @return
      */
     List<AdSetupRequest.PlayerDetail> createPlayerDetailList(AdSetupRequest adRequest) {
 
