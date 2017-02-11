@@ -94,6 +94,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
             AdSetupRequest adSetupRequest = new AdSetupRequest();
 
+            //Each Schedule represents a single(1) screen for that given date/day
             for (AdSchedule adSchedule : fetchedSchedules) {
 
                 AdScreen adScreen = adSchedule.getAdScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
@@ -147,12 +148,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         existingProgIds.add("" + adProgram.getAdvertProgramId());
                     }
                 }
-                
+
                 //To-DO         ->> Call to Generate Ids here <<-
                 //To-DO         ->> Assign the generated Ids to each of the programs and the Resources <<-
                 //To-DO         ->> Update Each of the Programs and Resources in the DB with these generated Ids <<- I think do this after sending successful to DSM
-                
-
                 List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
                 List<ProgramDetail.Program> programs = new ArrayList<>();
                 AdSetupRequest.ProgramDetail progDetail = adSetupRequest.new ProgramDetail();
@@ -160,7 +159,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 ProgramDetail.Program program;
                 for (AdProgram adProgram : fetchedPrograms) {
 
-                    program = createProgramList(progDetail, adProgram, mapOfProgIdsAndDisplayTime);
+                    program = createProgram(progDetail, adProgram, mapOfProgIdsAndDisplayTime);
                     programs.add(program);
 
                 }
@@ -170,6 +169,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 //add only a single day's ProgramDetail, could add more days but 1 day for now
                 programDetailList.add(progDetail);
+                
+                
+                
+                
 
                 //generate file ids
                 GenerateIdRequest generateIdRequest = new GenerateIdRequest();
@@ -279,13 +282,13 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param adResources
      * @return
      */
-    ProgramDetail.Program createProgramList(AdSetupRequest.ProgramDetail progDetail, AdProgram adProgram, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime) {
+    ProgramDetail.Program createProgram(AdSetupRequest.ProgramDetail progDetail, AdProgram adProgram, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime) {
 
         ProgramDetail.Program prog = progDetail.new Program();
 
         long adLength = adProgram.getAdLength();
         Set<AdResource> adResources = adProgram.getAdResourceList();
-        
+
         //for small values we can just cast a Long to an int, for large values be ware, we loose precision and accuracy so we don't do it
         List<Integer> displayTimesFromMap = mapOfProgIdsAndDisplayTime.get((int) adProgram.getId());
         List<DisplayTime> displayTimes = new ArrayList<>();
@@ -379,34 +382,31 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         return programDetailList;
     }
 
-    List<AdSetupRequest.TerminalDetail> createTerminalDetailList1(AdSetupRequest adRequest, List<AdTerminal> adTerminalList, List<Integer> programIdList) {
+    List<AdSetupRequest.TerminalDetail> createTerminalDetailList1(AdSetupRequest adRequest, List<AdScreen> adScreenList, List<Integer> programIdList) {
 
         AdSetupRequest.TerminalDetail playerDetail = adRequest.new TerminalDetail();
         playerDetail.setDisplayDate("2017-01-22");
-        
+
         List<AdSetupRequest.TerminalDetail.Terminal> terminalList = new ArrayList<>();
-        
-        for (AdTerminal adTerminal : adTerminalList){
-            
+
+        for (AdScreen adScreen : adScreenList) {
+
+            AdTerminal adTerminal = adScreen.getSupportTerminal();
+
             AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
             terminal.setProgramIdList(programIdList);
             terminal.setTaskId(adTerminal.getTaskId());
             terminal.setTaskName(adTerminal.getTerminalName());
             terminal.setTerminalId(adTerminal.getTerminalId());
-            terminal.setTerminalHeight(2); //get these from screen terminal supports
-            terminal.setTerminalWidth(2);
-            
+            terminal.setTerminalHeight(adScreen.getDisplayHeight()); //get these from screen terminal supports
+            terminal.setTerminalWidth(adScreen.getDisplayWidth());
+
             //adding only one terminal for now I think otherwise, the request can be too big if we do multiple terminals. But don't worry we support multiple terminals
             terminalList.add(terminal);
-            
+
         }
 
         //Terminals
-        
-
-        
-        
-
         playerDetail.setTerminals(terminalList);
 
         List<AdSetupRequest.TerminalDetail> playerDetailList = new ArrayList<>();
