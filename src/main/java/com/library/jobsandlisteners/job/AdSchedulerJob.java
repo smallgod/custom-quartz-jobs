@@ -152,41 +152,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 //To-DO         ->> Call to Generate Ids here <<-
                 //To-DO         ->> Assign the generated Ids to each of the programs and the Resources <<-
                 //To-DO         ->> Update Each of the Programs and Resources in the DB with these generated Ids <<- I think do this after sending successful to DSM
-                List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
-                List<AdSetupRequest.TerminalDetail> terminalDetailList = new ArrayList<>();
-
-                AdSetupRequest.ProgramDetail progDetail = adSetupRequest.new ProgramDetail();
-                progDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT)); //we can have several ProgramDetail with display times, but only doing today/now
-
-                List<ProgramDetail.Program> programs = createProgramList(progDetail, fetchedPrograms, mapOfProgEntityIdsAndDisplayTime);
-
-                progDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT));
-                progDetail.setProgramIds(programs);
-
-                //add only a single day's ProgramDetail, could add more days but 1 day for now
-                programDetailList.add(progDetail);
-
-                AdSetupRequest.TerminalDetail terminalDetail = adSetupRequest.new TerminalDetail();
-                terminalDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT));//we can have TerminalDetail with several display times, but only doing today/now
-
-                List<AdSetupRequest.TerminalDetail.Terminal> terminalList = createTerminalDetailList1(adSetupRequest, Arrays.asList(adScreen), programIdList); //programIdList is from program Ids that have been generated
-                terminalDetail.setTerminals(terminalList);
-
-                //add only a single day's TerminalDetail, could add more days but 1 day for now
-                terminalDetailList.add(terminalDetail);
-
-                //List<AdSetupRequest.ProgramDetail> programDetailList = createProgramDetailList(adSetupRequest);
-                //List<AdSetupRequest.TerminalDetail> terminalDetailList = createTerminalDetailList(adSetupRequest);
-                adSetupRequest.setMethodName(APIMethodName.DAILY_SETUP_STEP2.getValue());
-                adSetupRequest.setProgramDetail(programDetailList);
-                adSetupRequest.setTerminalDetail(terminalDetailList);
-
-                String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
-
-                String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
-
-                logger.debug("Mega wrapper Response: " + response);
-
                 //generate file ids
                 /////
                 /////
@@ -217,6 +182,48 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
                 List<String> generatedIdList = genIdResponse.getGeneratedIdList();
+                
+                
+                
+                
+                
+                
+                
+                List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
+                List<AdSetupRequest.TerminalDetail> terminalDetailList = new ArrayList<>();
+
+                AdSetupRequest.ProgramDetail progDetail = adSetupRequest.new ProgramDetail();
+
+                List<ProgramDetail.Program> programs = createProgramList(progDetail, fetchedPrograms, mapOfProgEntityIdsAndDisplayTime);
+
+                progDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT)); //we can have several ProgramDetail with display times, but only doing today/now
+                progDetail.setProgramIds(programs);
+
+                //add only a single day's ProgramDetail, could add more days but 1 day for now
+                programDetailList.add(progDetail);
+
+                AdSetupRequest.TerminalDetail terminalDetail = adSetupRequest.new TerminalDetail();
+                terminalDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT));//we can have TerminalDetail with several display times, but only doing today/now
+
+                List<AdSetupRequest.TerminalDetail.Terminal> terminalList = createTerminalList(terminalDetail, Arrays.asList(adScreen), programIdList); //programIdList is from program Ids that have been generated
+                terminalDetail.setTerminals(terminalList);
+
+                //add only a single day's TerminalDetail, could add more days but 1 day for now
+                terminalDetailList.add(terminalDetail);
+
+                //List<AdSetupRequest.ProgramDetail> programDetailList = createProgramDetailList(adSetupRequest);
+                //List<AdSetupRequest.TerminalDetail> terminalDetailList = createTerminalDetailList(adSetupRequest);
+                adSetupRequest.setMethodName(APIMethodName.DAILY_SETUP_STEP2.getValue());
+                adSetupRequest.setProgramDetail(programDetailList);
+                adSetupRequest.setTerminalDetail(terminalDetailList);
+
+                String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
+
+                String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
+
+                logger.debug("Mega wrapper Response: " + response);
+
+                
 
                 /*
                 String jsonRequest = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
@@ -329,6 +336,38 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
     }
 
     /**
+     * 
+     * @param terminalDetail
+     * @param adScreenList
+     * @param programIdList
+     * @return 
+     */
+    List<AdSetupRequest.TerminalDetail.Terminal> createTerminalList(AdSetupRequest.TerminalDetail terminalDetail, List<AdScreen> adScreenList, List<Integer> programIdList) {
+
+        List<AdSetupRequest.TerminalDetail.Terminal> terminalList = new ArrayList<>();
+
+        for (AdScreen adScreen : adScreenList) {
+
+            AdTerminal adTerminal = adScreen.getSupportTerminal();
+
+            AdSetupRequest.TerminalDetail.Terminal terminal = terminalDetail.new Terminal();
+            terminal.setProgramIdList(programIdList);
+            terminal.setTaskId(adTerminal.getTaskId());
+            terminal.setTaskName(adTerminal.getTerminalName());
+            terminal.setTerminalId(adTerminal.getTerminalId());
+            terminal.setTerminalHeight(adScreen.getDisplayHeight()); //get these from screen terminal supports
+            terminal.setTerminalWidth(adScreen.getDisplayWidth());
+
+            //adding only one terminal for now I think otherwise, the request can be too big if we do multiple terminals. But don't worry we support multiple terminals
+            terminalList.add(terminal);
+
+        }
+
+        return terminalList;
+    }
+
+    
+    /**
      *
      *
      * @param adRequest
@@ -380,39 +419,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         return programDetailList;
     }
-
-    List<AdSetupRequest.TerminalDetail.Terminal> createTerminalDetailList1(AdSetupRequest adRequest, List<AdScreen> adScreenList, List<Integer> programIdList) {
-
-        List<AdSetupRequest.TerminalDetail.Terminal> terminalList = new ArrayList<>();
-
-        for (AdScreen adScreen : adScreenList) {
-
-            AdTerminal adTerminal = adScreen.getSupportTerminal();
-
-            AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
-            terminal.setProgramIdList(programIdList);
-            terminal.setTaskId(adTerminal.getTaskId());
-            terminal.setTaskName(adTerminal.getTerminalName());
-            terminal.setTerminalId(adTerminal.getTerminalId());
-            terminal.setTerminalHeight(adScreen.getDisplayHeight()); //get these from screen terminal supports
-            terminal.setTerminalWidth(adScreen.getDisplayWidth());
-
-            //adding only one terminal for now I think otherwise, the request can be too big if we do multiple terminals. But don't worry we support multiple terminals
-            terminalList.add(terminal);
-
-        }
-
-        //Terminals
-        playerDetail.setTerminals(terminalList);
-
-        List<AdSetupRequest.TerminalDetail> playerDetailList = new ArrayList<>();
-        //add only a single day's terminalDetail
-        playerDetailList.add(playerDetail);
-
-        //adRequest.setPlayerDetail(playerDetailList);
-        return playerDetailList;
-    }
-
+    
     /**
      *
      * @param adRequest
@@ -424,10 +431,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         playerDetail.setDisplayDate("2017-01-22");
 
         //program IDs
-        List<Long> programIdList = new ArrayList<>();
-        programIdList.add(763838330L);
-        programIdList.add(543838330L);
-        programIdList.add(913838330L);
+        List<Integer> programIdList = new ArrayList<>();
+        programIdList.add(763838330);
+        programIdList.add(543838330);
+        programIdList.add(913838330);
 
         //Terminals
         AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
