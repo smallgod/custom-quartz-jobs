@@ -14,6 +14,7 @@ import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
+import com.library.datamodel.Constants.ResourceType;
 import com.library.datamodel.Json.GenerateIdRequest;
 import com.library.datamodel.Json.GeneratedIdResponse;
 import com.library.datamodel.Json.AdSetupRequest;
@@ -22,8 +23,10 @@ import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.DisplayTi
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.Resources;
 import com.library.datamodel.model.v1_0.AdClient;
 import com.library.datamodel.model.v1_0.AdProgram;
+import com.library.datamodel.model.v1_0.AdResource;
 import com.library.datamodel.model.v1_0.AdSchedule;
 import com.library.datamodel.model.v1_0.AdScreen;
+import com.library.datamodel.model.v1_0.AdTerminal;
 import com.library.dbadapter.DatabaseAdapter;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
@@ -40,9 +43,12 @@ import com.library.utilities.LoggerUtil;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.joda.time.LocalDate;
+import org.joda.time.LocalTime;
 
 /**
  * The class doing the work
@@ -86,6 +92,8 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         if (!fetchedSchedules.isEmpty()) {
 
+            AdSetupRequest adSetupRequest = new AdSetupRequest();
+
             for (AdSchedule adSchedule : fetchedSchedules) {
 
                 AdScreen adScreen = adSchedule.getAdScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
@@ -98,36 +106,70 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 logger.debug("ProgTimeArray: " + Arrays.toString(progTimeArray));
 
                 List< Integer> displayTimeList = new ArrayList<>();
-                List< Integer> progEntityIdList = new ArrayList<>();
+
+                Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime = new HashMap<>();
 
                 for (String element : progTimeArray) {
+
                     int progEntityId = Integer.parseInt(element.split("\\s*::\\s*")[0]);
                     int displayTime = Integer.parseInt(element.split("\\s*::\\s*")[1]);
 
                     displayTimeList.add(displayTime);
-                    progEntityIdList.add(progEntityId);
+
+                    if (mapOfProgIdsAndDisplayTime.containsKey(progEntityId)) {
+                        mapOfProgIdsAndDisplayTime.get(progEntityId).add(displayTime);//add this displayTime to the list already available
+
+                    } else {
+                        mapOfProgIdsAndDisplayTime.put(progEntityId, Arrays.asList(displayTime));
+                    }
                 }
 
                 Map<String, List<Object>> programProps = new HashMap<>();
 
                 List<Object> displayDates = new ArrayList<>();
                 displayDates.add(DateUtils.getDateNow()); //putting it in the List<Object> for the sake
-                
-                programProps.put("id", new ArrayList<Object>(progEntityIdList));
+
+                programProps.put("id", new ArrayList<Object>(mapOfProgIdsAndDisplayTime.keySet()));
                 programProps.put("displayDate", displayDates);
 
                 //Fetch Program details to check which ones we need to generate ids for
                 List< AdProgram> fetchedPrograms = databaseAdapter.fetchBulkWithMultipleValues(EntityName.AD_PROGRAM, programProps, columnsToFetch);
-                
-                int numOfIdsToGenerate = 0;
+
+                int numOfFileIdsToGenerate = 0;
+                int numOfProgIdsToGenerate = fetchedPrograms.size();
                 List<String> existingProgIds = new ArrayList<>();
-                for (AdProgram adProgram : fetchedPrograms){
-                    
-                    AdClient client = adProgram.getAdClient();
+
+                //need to have the Ids generated before performing some operations below, cuze they depend on those Ids
+                for (AdProgram adProgram : fetchedPrograms) {
+                    numOfFileIdsToGenerate += adProgram.getNumOfFileResources();
                     Boolean isDSMUpdated = adProgram.isIsDSMUpdated();
-                    int adLength = adProgram.getAdLength();
-                    numOfIdsToGenerate = adProgram.getNumOfFileResources();
+                    if (isDSMUpdated) {
+                        existingProgIds.add("" + adProgram.getAdvertProgramId());
+                    }
                 }
+                
+                //To-DO         ->> Call to Generate Ids here <<-
+                //To-DO         ->> Assign the generated Ids to each of the programs and the Resources <<-
+                //To-DO         ->> Update Each of the Programs and Resources in the DB with these generated Ids <<- I think do this after sending successful to DSM
+                
+
+                List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
+                List<ProgramDetail.Program> programs = new ArrayList<>();
+                AdSetupRequest.ProgramDetail progDetail = adSetupRequest.new ProgramDetail();
+
+                ProgramDetail.Program program;
+                for (AdProgram adProgram : fetchedPrograms) {
+
+                    program = createProgramList(progDetail, adProgram, mapOfProgIdsAndDisplayTime);
+                    programs.add(program);
+
+                }
+
+                progDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT));
+                progDetail.setProgramIds(programs);
+
+                //add only a single day's ProgramDetail, could add more days but 1 day for now
+                programDetailList.add(progDetail);
 
                 //generate file ids
                 GenerateIdRequest generateIdRequest = new GenerateIdRequest();
@@ -136,13 +178,15 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 GenerateIdRequest.Params fileIdParams = generateIdRequest.new Params();
                 fileIdParams.setId(GenerateId.FILE_ID.getValue());
                 fileIdParams.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
-                fileIdParams.setNumOfIds(numOfIdsToGenerate);
+                fileIdParams.setNumOfIds(numOfFileIdsToGenerate);
+                fileIdParams.setExistingIdList(null); //To-Do work on this
                 params.add(fileIdParams);
-                
+
                 GenerateIdRequest.Params progIdParams = generateIdRequest.new Params();
                 progIdParams.setId(GenerateId.PROGRAM_ID.getValue());
                 progIdParams.setIdTypeToGenerate(GenerateIdType.INTEGER.getValue());
-                progIdParams.setNumOfIds(numOfIdsToGenerate);
+                progIdParams.setNumOfIds(numOfProgIdsToGenerate);
+                progIdParams.setExistingIdList(existingProgIds);
                 params.add(progIdParams);
 
                 generateIdRequest.setMethodName(APIMethodName.GENERATE_ID.getValue());
@@ -151,12 +195,12 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
 
                 String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
-                                                                                    
+
                 GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
                 List<String> generatedIdList = genIdResponse.getGeneratedIdList();
 
                 AdSetupRequest adRequest = new AdSetupRequest();
-                adRequest.setMethodName(APIMethodName.BULK_ADVERT_SETUP.getValue());
+                adRequest.setMethodName(APIMethodName.DAILY_SETUP_STEP2.getValue());
 
                 //update today's resources in DB with the generated Ids for each resource before resources are uploaded to the server
                 //updateDb
@@ -170,9 +214,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 //resource details
                 //ResourceDetail resDetail = createResourceDetail();
                 //player details
-                List<AdSetupRequest.PlayerDetail> playerDetailList = createPlayerDetailList(adRequest);
+                List<AdSetupRequest.TerminalDetail> playerDetailList = createTerminalDetailList(adRequest);
 
-                adRequest.setPlayerDetail(playerDetailList);
+                adRequest.setTerminalDetail(playerDetailList);
                 adRequest.setProgramDetail(progDetailList);
 
                 String jsonReq = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
@@ -212,15 +256,15 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 //    ResourceDetail createResourceDetail() {
 //
 //        ResourceDetail resourceDetail = new ResourceDetail();
-//        ResourceDetail.PlayerDetail playerDetail = resourceDetail.new PlayerDetail();
+//        ResourceDetail.TerminalDetail playerDetail = resourceDetail.new TerminalDetail();
 //
-//        ResourceDetail.PlayerDetail.Resources resources = playerDetail.new Resources();
+//        ResourceDetail.TerminalDetail.Resources resources = playerDetail.new Resources();
 //        resources.setResourceDetail("restaurant_front.mp4");
 //        resources.setResourceId("5480212808");
 //        resources.setResourceType("VIDEO");
 //        resources.setStatus("OLD");
 //
-//        List<ResourceDetail.PlayerDetail.Resources> resourcesList = new ArrayList<>();
+//        List<ResourceDetail.TerminalDetail.Resources> resourcesList = new ArrayList<>();
 //
 //        playerDetail.setDisplayDate("2017-01-13");
 //        playerDetail.setResources(resourcesList);
@@ -229,6 +273,61 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 //
 //    }
     /**
+     *
+     * @param progDetail
+     * @param adProgram
+     * @param adResources
+     * @return
+     */
+    ProgramDetail.Program createProgramList(AdSetupRequest.ProgramDetail progDetail, AdProgram adProgram, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime) {
+
+        ProgramDetail.Program prog = progDetail.new Program();
+
+        long adLength = adProgram.getAdLength();
+        Set<AdResource> adResources = adProgram.getAdResourceList();
+        
+        //for small values we can just cast a Long to an int, for large values be ware, we loose precision and accuracy so we don't do it
+        List<Integer> displayTimesFromMap = mapOfProgIdsAndDisplayTime.get((int) adProgram.getId());
+        List<DisplayTime> displayTimes = new ArrayList<>();
+
+        DisplayTime displayTime;
+        for (int time : displayTimesFromMap) {
+
+            LocalTime startLocalTime = DateUtils.convertMillisToLocalTime(time, NamedConstants.UTC_TIME_ZONE);
+            LocalTime endLocalTime = startLocalTime.plusMillis((int) adLength); //adlength determines display End-time
+
+            displayTime = prog.new DisplayTime();
+            displayTime.setStarttime(DateUtils.convertLocalTimeToString(startLocalTime, NamedConstants.HOUR_MINUTE_SEC_FORMAT)); //is this format "hh:mm:ss" a must? can't we do "hh:mm"
+            displayTime.setStoptime(DateUtils.convertLocalTimeToString(endLocalTime, NamedConstants.HOUR_MINUTE_SEC_FORMAT));
+
+            displayTimes.add(displayTime);
+        }
+
+        prog.setDisplayLayout(adProgram.getDisplayLayout().getValue());
+        prog.setProgramId(adProgram.getAdvertProgramId());
+        prog.setStatus("NEW"); //To-Do check if program is already uploaded to DSM and send "NEW" otherwise sending something else..
+
+        List<Resources> resourcesList = new ArrayList<>();
+
+        for (AdResource adResource : adResources) {
+
+            Resources resources = prog.new Resources();
+            resources.setResourceDetail(adResource.getResourceName()); //"restaurant_front.mp4"
+            resources.setResourceId(adResource.getResourceId()); //"5480212808"
+            resources.setResourceType(adResource.getResourceType().toString()); //"VIDEO"
+            resources.setStatus("OLD"); //To-Do see how to get this field based on whether this resource is already uploaded onto DSM or not
+
+            resourcesList.add(resources);
+        }
+
+        prog.setResources(resourcesList);
+        prog.setDisplayTimesList(displayTimes);
+
+        return prog;
+    }
+
+    /**
+     *
      *
      * @param adRequest
      * @return
@@ -239,7 +338,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         ProgramDetail.Program prog = progDetail.new Program();
         prog.setDisplayLayout("3SPLIT");
-        prog.setProgramId("19011480463480900778");
+        prog.setProgramId(898899);
         prog.setStatus("NEW");
 
         DisplayTime displayTime1 = prog.new DisplayTime();
@@ -258,7 +357,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         Resources resources = prog.new Resources();
         resources.setResourceDetail("restaurant_front.mp4");
-        resources.setResourceId("5480212808");
+        resources.setResourceId(480212808L);
         resources.setResourceType("VIDEO");
         resources.setStatus("OLD");
 
@@ -280,14 +379,52 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         return programDetailList;
     }
 
+    List<AdSetupRequest.TerminalDetail> createTerminalDetailList1(AdSetupRequest adRequest, List<AdTerminal> adTerminalList, List<Integer> programIdList) {
+
+        AdSetupRequest.TerminalDetail playerDetail = adRequest.new TerminalDetail();
+        playerDetail.setDisplayDate("2017-01-22");
+        
+        List<AdSetupRequest.TerminalDetail.Terminal> terminalList = new ArrayList<>();
+        
+        for (AdTerminal adTerminal : adTerminalList){
+            
+            AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
+            terminal.setProgramIdList(programIdList);
+            terminal.setTaskId(adTerminal.getTaskId());
+            terminal.setTaskName(adTerminal.getTerminalName());
+            terminal.setTerminalId(adTerminal.getTerminalId());
+            terminal.setTerminalHeight(2); //get these from screen terminal supports
+            terminal.setTerminalWidth(2);
+            
+            //adding only one terminal for now I think otherwise, the request can be too big if we do multiple terminals. But don't worry we support multiple terminals
+            terminalList.add(terminal);
+            
+        }
+
+        //Terminals
+        
+
+        
+        
+
+        playerDetail.setTerminals(terminalList);
+
+        List<AdSetupRequest.TerminalDetail> playerDetailList = new ArrayList<>();
+        //add only a single day's playerDetail
+        playerDetailList.add(playerDetail);
+
+        //adRequest.setPlayerDetail(playerDetailList);
+        return playerDetailList;
+    }
+
     /**
      *
      * @param adRequest
      * @return
      */
-    List<AdSetupRequest.PlayerDetail> createPlayerDetailList(AdSetupRequest adRequest) {
+    List<AdSetupRequest.TerminalDetail> createTerminalDetailList(AdSetupRequest adRequest) {
 
-        AdSetupRequest.PlayerDetail playerDetail = adRequest.new PlayerDetail();
+        AdSetupRequest.TerminalDetail playerDetail = adRequest.new TerminalDetail();
         playerDetail.setDisplayDate("2017-01-22");
 
         //program IDs
@@ -297,7 +434,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         programIdList.add(913838330L);
 
         //Terminals
-        AdSetupRequest.PlayerDetail.TerminalDetail terminal = playerDetail.new TerminalDetail();
+        AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
         terminal.setProgramIdList(programIdList);
         terminal.setTaskId(839392829);
         terminal.setTaskName("First Task");
@@ -305,13 +442,13 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         terminal.setTerminalHeight(1920);
         terminal.setTerminalWidth(1080);
 
-        List<AdSetupRequest.PlayerDetail.TerminalDetail> terminalList = new ArrayList<>();
+        List<AdSetupRequest.TerminalDetail.Terminal> terminalList = new ArrayList<>();
         //adding only one terminal for now
         terminalList.add(terminal);
 
         playerDetail.setTerminals(terminalList);
 
-        List<AdSetupRequest.PlayerDetail> playerDetailList = new ArrayList<>();
+        List<AdSetupRequest.TerminalDetail> playerDetailList = new ArrayList<>();
         //add only a single day's playerDetail
         playerDetailList.add(playerDetail);
 

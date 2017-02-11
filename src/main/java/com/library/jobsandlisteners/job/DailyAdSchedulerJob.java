@@ -123,9 +123,9 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         //resource details
         //ResourceDetail resDetail = createResourceDetail();
         //player details
-        List<AdSetupRequest.PlayerDetail> playerDetailList = createPlayerDetailList(adRequest);
+        List<AdSetupRequest.TerminalDetail> playerDetailList = createPlayerDetailList(adRequest);
 
-        adRequest.setPlayerDetail(playerDetailList);
+        adRequest.setTerminalDetail(playerDetailList);
         adRequest.setProgramDetail(progDetailList);
 
         String jsonReq = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
@@ -160,15 +160,15 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
 //    ResourceDetail createResourceDetail() {
 //
 //        ResourceDetail resourceDetail = new ResourceDetail();
-//        ResourceDetail.PlayerDetail playerDetail = resourceDetail.new PlayerDetail();
+//        ResourceDetail.TerminalDetail playerDetail = resourceDetail.new TerminalDetail();
 //
-//        ResourceDetail.PlayerDetail.Resources resources = playerDetail.new Resources();
+//        ResourceDetail.TerminalDetail.Resources resources = playerDetail.new Resources();
 //        resources.setResourceDetail("restaurant_front.mp4");
 //        resources.setResourceId("5480212808");
 //        resources.setResourceType("VIDEO");
 //        resources.setStatus("OLD");
 //
-//        List<ResourceDetail.PlayerDetail.Resources> resourcesList = new ArrayList<>();
+//        List<ResourceDetail.TerminalDetail.Resources> resourcesList = new ArrayList<>();
 //
 //        playerDetail.setDisplayDate("2017-01-13");
 //        playerDetail.setResources(resourcesList);
@@ -233,9 +233,9 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
      * @param adRequest
      * @return
      */
-    List<AdSetupRequest.PlayerDetail> createPlayerDetailList(AdSetupRequest adRequest) {
+    List<AdSetupRequest.TerminalDetail> createPlayerDetailList(AdSetupRequest adRequest) {
 
-        AdSetupRequest.PlayerDetail playerDetail = adRequest.new PlayerDetail();
+        AdSetupRequest.TerminalDetail playerDetail = adRequest.new TerminalDetail();
         playerDetail.setDisplayDate("2017-01-22");
 
         //program IDs
@@ -245,7 +245,7 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         programIdList.add(913838330L);
 
         //Terminals
-        AdSetupRequest.PlayerDetail.TerminalDetail terminal = playerDetail.new TerminalDetail();
+        AdSetupRequest.TerminalDetail.TerminalDetail terminal = playerDetail.new TerminalDetail();
         terminal.setProgramIdList(programIdList);
         terminal.setTaskId(839392829);
         terminal.setTaskName("First Task");
@@ -253,13 +253,13 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         terminal.setTerminalHeight(1920);
         terminal.setTerminalWidth(1080);
 
-        List<AdSetupRequest.PlayerDetail.TerminalDetail> terminalList = new ArrayList<>();
+        List<AdSetupRequest.TerminalDetail.TerminalDetail> terminalList = new ArrayList<>();
         //adding only one terminal for now
         terminalList.add(terminal);
 
         playerDetail.setTerminals(terminalList);
 
-        List<AdSetupRequest.PlayerDetail> playerDetailList = new ArrayList<>();
+        List<AdSetupRequest.TerminalDetail> playerDetailList = new ArrayList<>();
         //add only a single day's playerDetail
         playerDetailList.add(playerDetail);
 
