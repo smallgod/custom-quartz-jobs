@@ -14,19 +14,19 @@ import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
-import com.library.datamodel.Constants.ResourceType;
 import com.library.datamodel.Json.GenerateIdRequest;
 import com.library.datamodel.Json.GeneratedIdResponse;
 import com.library.datamodel.Json.AdSetupRequest;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.DisplayTime;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.Resources;
-import com.library.datamodel.model.v1_0.AdClient;
+import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.Text;
 import com.library.datamodel.model.v1_0.AdProgram;
 import com.library.datamodel.model.v1_0.AdResource;
 import com.library.datamodel.model.v1_0.AdSchedule;
 import com.library.datamodel.model.v1_0.AdScreen;
 import com.library.datamodel.model.v1_0.AdTerminal;
+import com.library.datamodel.model.v1_0.AdText;
 import com.library.dbadapter.DatabaseAdapter;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
@@ -43,7 +43,6 @@ import com.library.utilities.LoggerUtil;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -85,7 +84,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         columnsToFetch.add("ALL");
 
         Map< String, Object> pendingAdsProps = new HashMap<>();
-        pendingAdsProps.put("isToUpdate", Boolean.FALSE);
+        pendingAdsProps.put("isToUpdate", Boolean.TRUE);  //True - If we need to fetch this schedule and update DSM and the row as well
         pendingAdsProps.put("displayDate", DateUtils.getDateNow());
 
         List< AdSchedule> fetchedSchedules = databaseAdapter.fetchBulkWithSingleValues(EntityName.AD_SCHEDULE, pendingAdsProps, columnsToFetch);
@@ -97,7 +96,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             //Each Schedule represents a single(1) screen for that given date/day
             for (AdSchedule adSchedule : fetchedSchedules) {
 
-                AdScreen adScreen = adSchedule.getAdScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
+                AdScreen adScreen = adSchedule.getAdScheduleScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
                 LocalDate displayDate = adSchedule.getDisplayDate();
                 String scheduleString = adSchedule.getScheduleDetail();
                 long scheduleId = adSchedule.getScheduleId();
@@ -115,14 +114,15 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                     int progEntityId = Integer.parseInt(element.split("\\s*::\\s*")[0]);
                     int displayTime = Integer.parseInt(element.split("\\s*::\\s*")[1]);
 
-                    displayTimeList.add(displayTime);
+                    logger.debug("progEntityId: " + progEntityId);
+                    logger.debug("displayTime : " + displayTime);
 
                     if (mapOfProgEntityIdsAndDisplayTime.containsKey(progEntityId)) {
-                        mapOfProgEntityIdsAndDisplayTime.get(progEntityId).add(displayTime);//add this displayTime to the list already available
 
-                    } else {
-                        mapOfProgEntityIdsAndDisplayTime.put(progEntityId, Arrays.asList(displayTime));
+                        displayTimeList = mapOfProgEntityIdsAndDisplayTime.get(progEntityId);
                     }
+                    displayTimeList.add(displayTime);
+                    mapOfProgEntityIdsAndDisplayTime.put(progEntityId, displayTimeList);
                 }
 
                 Map<String, List<Object>> programProps = new HashMap<>();
@@ -136,19 +136,26 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 //Fetch Program details to check which ones we need to generate ids for
                 List< AdProgram> fetchedPrograms = databaseAdapter.fetchBulkWithMultipleValues(EntityName.AD_PROGRAM, programProps, columnsToFetch);
 
-                int numOfFileIdsToGenerate = 0;
-                int numOfProgIdsToGenerate = fetchedPrograms.size();
+                int numOfFileIdsNeeded = 0;
+                int numOfProgIdsNeeded = fetchedPrograms.size(); //need to check this, some fetched programs might have program Ids and no need to generate
                 List<String> existingProgIds = new ArrayList<>();
 
                 //need to have the Ids generated before performing some operations below, cuze they depend on those Ids
                 for (AdProgram adProgram : fetchedPrograms) {
-                    numOfFileIdsToGenerate += adProgram.getNumOfFileResources();
+                    numOfFileIdsNeeded += adProgram.getNumOfFileResources();
                     Boolean isDSMUpdated = adProgram.isIsDSMUpdated();
                     if (isDSMUpdated) {
                         existingProgIds.add("" + adProgram.getAdvertProgramId());
+
+                        numOfProgIdsNeeded -= 1; //decrement needed program Ids
                     }
                 }
 
+                List< AdProgram> adResourceList = databaseAdapter.fetchSets(EntityName.AD_PROGRAM, "adResourceList");
+                logger.debug(">>>>>>>>>>>>>>FFFFFFFFFFFFFFFFFfetched no. of adResourceList set objects: " + adResourceList.size());
+                logger.debug(">>>>>>>>>>>>>>SSSSSSSSSSSSSSSSSsize of resources is: " + adResourceList.get(0).getAdResourceList().size());
+
+                //To-Do         ->> For Existing resources check makijng sure we don't double upload resources, we will work on this later..
                 //To-DO         ->> Call to Generate Ids here <<-
                 //To-DO         ->> Assign the generated Ids to each of the programs and the Resources <<-
                 //To-DO         ->> Update Each of the Programs and Resources in the DB with these generated Ids <<- I think do this after sending successful to DSM
@@ -162,14 +169,14 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 GenerateIdRequest.Params fileIdParams = generateIdRequest.new Params();
                 fileIdParams.setId(GenerateId.FILE_ID.getValue());
                 fileIdParams.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
-                fileIdParams.setNumOfIds(numOfFileIdsToGenerate);
-                fileIdParams.setExistingIdList(null); //To-Do work on this
+                fileIdParams.setNumOfIds(numOfFileIdsNeeded);
+                fileIdParams.setExistingIdList(new ArrayList<String>()); //To-Do work on this
                 params.add(fileIdParams);
 
                 GenerateIdRequest.Params progIdParams = generateIdRequest.new Params();
                 progIdParams.setId(GenerateId.PROGRAM_ID.getValue());
                 progIdParams.setIdTypeToGenerate(GenerateIdType.INTEGER.getValue());
-                progIdParams.setNumOfIds(numOfProgIdsToGenerate);
+                progIdParams.setNumOfIds(numOfProgIdsNeeded);
                 progIdParams.setExistingIdList(existingProgIds);
                 params.add(progIdParams);
 
@@ -177,24 +184,51 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 generateIdRequest.setParams(params);
 
                 String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
-
                 String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
 
                 GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
-                List<String> generatedIdList = genIdResponse.getGeneratedIdList();
-                
-                
-                
-                
-                
-                
-                
+                List<GeneratedIdResponse.Response> responseList = genIdResponse.getResponse();
+
+                List<GeneratedIdResponse.Response.ExistingIDCheck> existingProgIdCheck;
+                List<GeneratedIdResponse.Response.ExistingIDCheck> existingFileIdCheck;
+                List<String> progIdsGenerated = new ArrayList<>();
+                List<String> fileIdsGenerated = new ArrayList<>();
+                int noOfProgIds;
+                int noOfFileIds;
+
+                for (GeneratedIdResponse.Response response : responseList) {
+
+                    GenerateId generatedId = GenerateId.convertToEnum(response.getId());
+
+                    switch (generatedId) {
+
+                        case PROGRAM_ID:
+                            progIdsGenerated = response.getGeneratedIdList();
+                            existingProgIdCheck = response.getExistingIdCheck();
+                            noOfProgIds = response.getNumOfIds();
+                            break;
+
+                        case FILE_ID:
+                            fileIdsGenerated = response.getGeneratedIdList();
+                            existingFileIdCheck = response.getExistingIdCheck();
+                            noOfFileIds = response.getNumOfIds();
+                            break;
+
+                        default:
+                            progIdsGenerated = response.getGeneratedIdList();
+                            existingProgIdCheck = response.getExistingIdCheck();
+                            noOfProgIds = response.getNumOfIds();
+                            break;
+                    }
+
+                }
+
                 List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
                 List<AdSetupRequest.TerminalDetail> terminalDetailList = new ArrayList<>();
 
                 AdSetupRequest.ProgramDetail progDetail = adSetupRequest.new ProgramDetail();
 
-                List<ProgramDetail.Program> programs = createProgramList(progDetail, fetchedPrograms, mapOfProgEntityIdsAndDisplayTime);
+                List<ProgramDetail.Program> programs = createProgramList(progDetail, fetchedPrograms, mapOfProgEntityIdsAndDisplayTime, progIdsGenerated, fileIdsGenerated);
 
                 progDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT)); //we can have several ProgramDetail with display times, but only doing today/now
                 progDetail.setProgramIds(programs);
@@ -205,7 +239,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 AdSetupRequest.TerminalDetail terminalDetail = adSetupRequest.new TerminalDetail();
                 terminalDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT));//we can have TerminalDetail with several display times, but only doing today/now
 
-                List<AdSetupRequest.TerminalDetail.Terminal> terminalList = createTerminalList(terminalDetail, Arrays.asList(adScreen), programIdList); //programIdList is from program Ids that have been generated
+                Map<Long, List<ProgramDetail.Program>> programScreenMap = new HashMap<>();
+                programScreenMap.put(adScreen.getId(), programs);
+
+                List<AdSetupRequest.TerminalDetail.Terminal> terminalList = createTerminalList(terminalDetail, Arrays.asList(adScreen), programScreenMap); //programIdList is from program Ids that have been generated
                 terminalDetail.setTerminals(terminalList);
 
                 //add only a single day's TerminalDetail, could add more days but 1 day for now
@@ -223,29 +260,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 logger.debug("Mega wrapper Response: " + response);
 
-                
-
-                /*
-                String jsonRequest = GeneralUtils.convertToJson(adRequest, AdSetupRequest.class);
-
-                logger.debug("Player Detail Request: " + jsonRequest);
-
-                String response = clientPool.sendRemoteRequest(jsonRequest, dsmRemoteUnit);
-
-                logger.info("Response from Central Server: " + response);
-
-                String resourceDetail = "{\"method\":\"RESOURCE_DETAIL\",\"terminalDetail\":[{\"display_date\":\"2017-01-10\",\"resources\":[{\"resource_id\":5480212808,\"resource_detail\":\"restaurant_front.mp4\",\"resource_type\":\"VIDEO\",\"status\":\"OLD\"},{\"resource_id\":2481434800,\"resource_detail\":\"This is Header text [DEL] This is scrolling text here..\",\"resource_type\":\"TEXT\",\"status\":\"NEW\"},{\"resource_id\":2481434800,\"resource_detail\":\"swimming pool.jpg\",\"resource_type\":\"IMAGE\",\"status\":\"NEW\"}]}]}";
-
-                String programDetail = "{\"method\":\"PROGRAM_DETAIL\",\"terminalDetail\":[{\"display_date\":\"2017-01-10\",\"program_ids\":[{\"program_id\":19011480463480900778,\"status\":\"UPDATED\",\"display_layout\":\"3SPLIT\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[1580212807,6290434822,2481434800]},{\"program_id\":97011480463480900778,\"status\":\"NEW\",\"display_layout\":\"TEXT_ONLY\",\"display_times\":[{\"starttime\":\"21:06:49\",\"stoptime\":\"21:07:49\"},{\"starttime\":\"22:06:49\",\"stoptime\":\"22:07:49\"}],\"resource_ids\":[5480212808]}]}]}";
-
-                String response2 = clientPool.sendRemoteRequest(resourceDetail, dsmRemoteUnit);
-
-                logger.info("ResourceDetail Response from Server: " + response2);
-
-                String response3 = clientPool.sendRemoteRequest(programDetail, dsmRemoteUnit);
-
-                logger.info("ProgramDetail Response from Server: " + response3);
-                 */
             }
 
         } else {
@@ -253,25 +267,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         }
     }
 
-//    ResourceDetail createResourceDetail() {
-//
-//        ResourceDetail resourceDetail = new ResourceDetail();
-//        ResourceDetail.TerminalDetail terminalDetail = resourceDetail.new TerminalDetail();
-//
-//        ResourceDetail.TerminalDetail.Resources resources = terminalDetail.new Resources();
-//        resources.setResourceDetail("restaurant_front.mp4");
-//        resources.setResourceId("5480212808");
-//        resources.setResourceType("VIDEO");
-//        resources.setStatus("OLD");
-//
-//        List<ResourceDetail.TerminalDetail.Resources> resourcesList = new ArrayList<>();
-//
-//        terminalDetail.setDisplayDate("2017-01-13");
-//        terminalDetail.setResources(resourcesList);
-//
-//        return resourceDetail;
-//
-//    }
     /**
      *
      * @param progDetail
@@ -279,20 +274,28 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param adResources
      * @return
      */
-    List<ProgramDetail.Program> createProgramList(AdSetupRequest.ProgramDetail progDetail, List<AdProgram> adProgramList, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime) {
+    List<ProgramDetail.Program> createProgramList(AdSetupRequest.ProgramDetail progDetail, List<AdProgram> adProgramList, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime, List<String> progIdsGenerated, List<String> fileIdsGenerated) {
 
         List<ProgramDetail.Program> programList = new ArrayList<>();
         ProgramDetail.Program prog;
+
+        int generatedProgIdCount = 0;
 
         for (AdProgram adProgram : adProgramList) {
 
             prog = progDetail.new Program();
 
             long adLength = adProgram.getAdLength();
+
             Set<AdResource> adResources = adProgram.getAdResourceList();
+            Set<AdText> adTexts = adProgram.getAdTextList();
+
+            logger.debug("resource list size: " + adResources.size() + " -> " + Arrays.asList(adResources));
+            logger.debug("adText   list size: " + adTexts.size() + " -> " + Arrays.asList(adTexts));
 
             //for small values we can just cast a Long to an int, for large values be ware, we loose precision and accuracy so we don't do it
-            List<Integer> displayTimesFromMap = mapOfProgIdsAndDisplayTime.get((int) adProgram.getId());
+            long progEntityId = adProgram.getId();
+            List<Integer> displayTimesFromMap = mapOfProgIdsAndDisplayTime.get((int) progEntityId);
             List<DisplayTime> displayTimes = new ArrayList<>();
 
             DisplayTime displayTime;
@@ -308,25 +311,56 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 displayTimes.add(displayTime);
             }
 
-            prog.setDisplayLayout(adProgram.getDisplayLayout().getValue());
-            prog.setProgramId(adProgram.getAdvertProgramId());
-            prog.setStatus("NEW"); //To-Do check if program is already uploaded to DSM and send "NEW" otherwise sending something else..
-
             List<Resources> resourcesList = new ArrayList<>();
+            int generatedResourceIdCount = 0;
 
             for (AdResource adResource : adResources) {
 
+                long resourceId = adResource.getResourceId();
+
+                if (resourceId == 0L) {
+
+                    resourceId = Long.parseLong(fileIdsGenerated.get(generatedResourceIdCount));
+                    generatedResourceIdCount++;
+                }
+
                 Resources resources = prog.new Resources();
                 resources.setResourceDetail(adResource.getResourceName()); //"restaurant_front.mp4"
-                resources.setResourceId(adResource.getResourceId()); //"5480212808"
-                resources.setResourceType(adResource.getResourceType().toString()); //"VIDEO"
+                resources.setResourceId(resourceId); //"5480212808"
+                resources.setEntityId(adResource.getId());
+                resources.setResourceType(adResource.getResourceType().getValue()); //"1" for "VIDEO"
                 resources.setStatus("OLD"); //To-Do see how to get this field based on whether this resource is already uploaded onto DSM or not
-
+                resources.setSequence(adResource.getSequence());
                 resourcesList.add(resources);
             }
 
+            List<Text> textList = new ArrayList<>();
+
+            for (AdText adText : adTexts) {
+
+                Text text = prog.new Text();
+
+                text.setText(adText.getTextContent());
+                text.setType(adText.getTextType().getValue());
+                text.setTextId(adText.getTextId());
+
+                textList.add(text);
+            }
+
+            int advertProgId = adProgram.getAdvertProgramId();
+            if (advertProgId == 0) {
+                advertProgId = Integer.parseInt(progIdsGenerated.get(generatedProgIdCount));
+                generatedProgIdCount++;
+            }
+
+            prog.setDisplayLayout(adProgram.getDisplayLayout().getValue());
+            prog.setEntityId(progEntityId);
+            prog.setProgramId(advertProgId);
+            prog.setStatus("NEW"); //To-Do check if program is already uploaded to DSM and send "NEW" otherwise sending something else..
+
             prog.setResources(resourcesList);
             prog.setDisplayTimesList(displayTimes);
+            prog.setText(textList);
 
             programList.add(prog);
 
@@ -336,17 +370,24 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
     }
 
     /**
-     * 
+     *
      * @param terminalDetail
      * @param adScreenList
      * @param programIdList
-     * @return 
+     * @return
      */
-    List<AdSetupRequest.TerminalDetail.Terminal> createTerminalList(AdSetupRequest.TerminalDetail terminalDetail, List<AdScreen> adScreenList, List<Integer> programIdList) {
+    List<AdSetupRequest.TerminalDetail.Terminal> createTerminalList(AdSetupRequest.TerminalDetail terminalDetail, List<AdScreen> adScreenList, Map<Long, List<ProgramDetail.Program>> programScreenMap) {
 
         List<AdSetupRequest.TerminalDetail.Terminal> terminalList = new ArrayList<>();
 
         for (AdScreen adScreen : adScreenList) {
+
+            List<ProgramDetail.Program> programs = programScreenMap.get(adScreen.getId());
+            List<Integer> programIdList = new ArrayList<>();
+
+            for (ProgramDetail.Program program : programs) {
+                programIdList.add(program.getProgramId());
+            }
 
             AdTerminal adTerminal = adScreen.getSupportTerminal();
 
@@ -366,7 +407,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         return terminalList;
     }
 
-    
     /**
      *
      *
@@ -399,7 +439,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         Resources resources = prog.new Resources();
         resources.setResourceDetail("restaurant_front.mp4");
         resources.setResourceId(480212808L);
-        resources.setResourceType("VIDEO");
+        resources.setResourceType(1); // "VIDEO
         resources.setStatus("OLD");
 
         resourcesList.add(resources);
@@ -419,7 +459,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         return programDetailList;
     }
-    
+
     /**
      *
      * @param adRequest
@@ -467,7 +507,11 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         JobDataMap jobsDataMap = jec.getMergedJobDataMap();
 
         JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
+
+        RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
+        RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
         HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
+        DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
 
         //logger.debug("size of jobMap: " + jobMap.size());
         /*logger.debug("sleeping for 30s at: " + new DateTime().getSecondOfDay());
@@ -488,11 +532,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         logger.debug("New AdFetch Request: " + jsonRequest);
 
-        Map<String, RemoteRequest> remoteUnits = jobsData.getRemoteRequestUnits();
-
-        RemoteRequest centralUnit = remoteUnits.get(NamedConstants.CENTRAL_UNIT_REQUEST);
-
-        String response = clientPool.sendRemoteRequest(jsonRequest, centralUnit);
+        String response = clientPool.sendRemoteRequest(jsonRequest, dsmRemoteUnit);
 
         logger.info("Response from Central Server: " + response);
 

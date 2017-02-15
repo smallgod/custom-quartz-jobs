@@ -19,6 +19,7 @@ import com.library.datamodel.Json.AdSetupRequest;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.DisplayTime;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.Resources;
+import com.library.dbadapter.DatabaseAdapter;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
@@ -70,11 +71,10 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         JobDataMap jobsDataMap = jec.getMergedJobDataMap();
 
         JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
-        Map<String, RemoteRequest> remoteUnits = jobsData.getRemoteRequestUnits();
-
-        RemoteRequest dsmRemoteUnit = remoteUnits.get(NamedConstants.DSM_UNIT_REQUEST);
-
+        RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
+        RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
         HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
+        DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
 
         //1. SETUP STEP-ONE
         GenerateIdRequest generateIdRequest = new GenerateIdRequest();
@@ -84,13 +84,13 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         GenerateIdRequest.Params fileIdParam = generateIdRequest.new Params();
         fileIdParam.setId(GenerateId.FILE_ID.getValue());
         fileIdParam.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
-        fileIdParam.setNumOfIds(); //get from DB
+        fileIdParam.setNumOfIds(5); //get from DB
         fileIdParam.setExistingIdList(new ArrayList<String>());
 
         GenerateIdRequest.Params programIdParam = generateIdRequest.new Params();
         programIdParam.setId(GenerateId.FILE_ID.getValue());
         programIdParam.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
-        programIdParam.setNumOfIds(); //get from DB
+        programIdParam.setNumOfIds(5); //get from DB
         programIdParam.setExistingIdList(new ArrayList<String>());
 
         paramsList.add(fileIdParam);
@@ -106,7 +106,7 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
 
         //2. SETUP STEP-TWO
-        List<String> generatedIdList = genIdResponse.getGeneratedIdList();
+       // List<String> generatedIdList = genIdResponse.getGeneratedIdList();
 
         AdSetupRequest adRequest = new AdSetupRequest();
         adRequest.setMethodName(APIMethodName.BULK_ADVERT_SETUP.getValue());
@@ -187,7 +187,7 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
 
         ProgramDetail.Program prog = progDetail.new Program();
         prog.setDisplayLayout("3SPLIT");
-        prog.setProgramId("19011480463480900778");
+        prog.setProgramId(80900778);
         prog.setStatus("NEW");
 
         DisplayTime displayTime1 = prog.new DisplayTime();
@@ -206,8 +206,8 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
 
         Resources resources = prog.new Resources();
         resources.setResourceDetail("restaurant_front.mp4");
-        resources.setResourceId("5480212808");
-        resources.setResourceType("VIDEO");
+        resources.setResourceId(5480212808L);
+        resources.setResourceType(1);
         resources.setStatus("OLD");
 
         resourcesList.add(resources);
@@ -239,13 +239,13 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         playerDetail.setDisplayDate("2017-01-22");
 
         //program IDs
-        List<Long> programIdList = new ArrayList<>();
-        programIdList.add(763838330L);
-        programIdList.add(543838330L);
-        programIdList.add(913838330L);
+        List<Integer> programIdList = new ArrayList<>();
+        programIdList.add(763838330);
+        programIdList.add(543838330);
+        programIdList.add(913838330);
 
         //Terminals
-        AdSetupRequest.TerminalDetail.TerminalDetail terminal = playerDetail.new TerminalDetail();
+        AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
         terminal.setProgramIdList(programIdList);
         terminal.setTaskId(839392829);
         terminal.setTaskName("First Task");
@@ -253,7 +253,7 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         terminal.setTerminalHeight(1920);
         terminal.setTerminalWidth(1080);
 
-        List<AdSetupRequest.TerminalDetail.TerminalDetail> terminalList = new ArrayList<>();
+        List<AdSetupRequest.TerminalDetail.Terminal> terminalList = new ArrayList<>();
         //adding only one terminal for now
         terminalList.add(terminal);
 
@@ -275,7 +275,13 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         JobDataMap jobsDataMap = jec.getMergedJobDataMap();
 
         JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
+        
+        RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
+        RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
+        RemoteRequest centralUnit = jobsData.getRemoteUnitConfig().getAdCentralRemoteUnit();
         HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
+        DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
+
 
         //logger.debug("size of jobMap: " + jobMap.size());
         /*logger.debug("sleeping for 30s at: " + new DateTime().getSecondOfDay());
@@ -295,10 +301,6 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         String jsonRequest = GeneralUtils.convertToJson(request, AdFetchRequest.class);
 
         logger.debug("New AdFetch Request: " + jsonRequest);
-
-        Map<String, RemoteRequest> remoteUnits = jobsData.getRemoteRequestUnits();
-
-        RemoteRequest centralUnit = remoteUnits.get(NamedConstants.CENTRAL_UNIT_REQUEST);
 
         String response = clientPool.sendRemoteRequest(jsonRequest, centralUnit);
 
