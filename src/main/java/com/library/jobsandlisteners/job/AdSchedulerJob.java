@@ -153,7 +153,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 List< AdProgram> adResourceList = databaseAdapter.fetchSets(EntityName.AD_PROGRAM, "adResourceList");
                 logger.debug(">>>>>>>>>>>>>>FFFFFFFFFFFFFFFFFfetched no. of adResourceList set objects: " + adResourceList.size());
-                logger.debug(">>>>>>>>>>>>>>SSSSSSSSSSSSSSSSSsize of resources is: " + adResourceList.get(0).getAdResourceList().size());
+                //logger.debug(">>>>>>>>>>>>>>SSSSSSSSSSSSSSSSSsize of resources is: " + adResourceList.get(0).getAdResourceList().size());
 
                 //To-Do         ->> For Existing resources check makijng sure we don't double upload resources, we will work on this later..
                 //To-DO         ->> Call to Generate Ids here <<-
@@ -287,8 +287,14 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
             long adLength = adProgram.getAdLength();
 
-            Set<AdResource> adResources = adProgram.getAdResourceList();
-            Set<AdText> adTexts = adProgram.getAdTextList();
+            
+             Set<AdResource> adResources = null;
+            Set<AdText> adTexts = null;
+            
+           // Set<AdResource> adResources = adProgram.getAdResourceList();
+            //Set<AdText> adTexts = adProgram.getAdTextList();
+            
+           
 
             logger.debug("resource list size: " + adResources.size() + " -> " + Arrays.asList(adResources));
             logger.debug("adText   list size: " + adTexts.size() + " -> " + Arrays.asList(adTexts));
@@ -389,7 +395,8 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 programIdList.add(program.getProgramId());
             }
 
-            AdTerminal adTerminal = adScreen.getSupportTerminal();
+            AdTerminal adTerminal = null;
+            //AdTerminal adTerminal = adScreen.getSupportTerminal(); //uncomment this when ready
 
             AdSetupRequest.TerminalDetail.Terminal terminal = terminalDetail.new Terminal();
             terminal.setProgramIdList(programIdList);
