@@ -96,7 +96,8 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             //Each Schedule represents a single(1) screen for that given date/day
             for (AdSchedule adSchedule : fetchedSchedules) {
 
-                AdScreen adScreen = adSchedule.getAdScheduleScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
+                AdScreen adScreen = null;
+                //AdScreen adScreen = adSchedule.getAdScheduleScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
                 LocalDate displayDate = adSchedule.getDisplayDate();
                 String scheduleString = adSchedule.getScheduleDetail();
                 long scheduleId = adSchedule.getScheduleId();
