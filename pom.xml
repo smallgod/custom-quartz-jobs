@@ -77,7 +77,16 @@
             <type>jar</type>
         </dependency>-->
         
-         <dependency>
+   
+        <dependency>
+            <groupId>com.sgfileuploadclient</groupId>
+            <artifactId>sgfileuploadclient</artifactId>
+            <version>1.0</version>
+            <type>jar</type>
+        </dependency>
+    
+        
+        <dependency>
             <groupId>com.sgdbadapter</groupId>
             <artifactId>sgdbadapter</artifactId>
             <version>1.0</version>
