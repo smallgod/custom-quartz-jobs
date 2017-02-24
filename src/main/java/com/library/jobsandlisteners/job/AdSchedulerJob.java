@@ -14,6 +14,7 @@ import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
+import com.library.datamodel.Constants.ResourceType;
 import com.library.datamodel.Json.GenerateIdRequest;
 import com.library.datamodel.Json.GeneratedIdResponse;
 import com.library.datamodel.Json.AdSetupRequest;
@@ -40,6 +41,7 @@ import org.quartz.JobExecutionException;
 import org.quartz.UnableToInterruptJobException;
 import com.library.sgsharedinterface.RemoteRequest;
 import com.library.utilities.DateUtils;
+import com.library.utilities.FileUtilities;
 import com.library.utilities.LoggerUtil;
 import java.io.File;
 import java.util.ArrayList;
@@ -82,39 +84,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
             DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
 
-            //In the interim I think we should fetch all resources and upload to DSM first
-            //We will need to rectify this code as it is tightly coupling the adDisplay unit to AdCentral
-            //since it is fetching resources from a machine path as though they were on the same machine e.g.
-            ///Users/smallgod/Desktop/DSM8_stuff/uploadstuff/97354630322880.mp4"
-            Set<File> filesToUpload = new HashSet<>();
-
-            Map<String, Object> resourcesToUploadProps = new HashMap<>();
-            Set<Boolean> isResourceUploaded = new HashSet<>();
-            isResourceUploaded.add(Boolean.FALSE);
-
             Set<String> columnsToFetch = new HashSet<>();
             columnsToFetch.add("ALL");
 
-            resourcesToUploadProps.put("isUploadedToDSM", isResourceUploaded);
-
-            Set<AdResource> fetchedResources = databaseAdapter.fetchBulk(EntityName.AD_RESOURCE, resourcesToUploadProps, columnsToFetch);
-
-            String fileUploadDir = "/etc/ug/adcentral/temp/uploads"; //these things need to change
-
-            for (AdResource resource : fetchedResources) {
-                String uploadName = resource.getResourceName();
-                String uploadId = resource.getUploadId();
-
-                String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
-
-                File file = new File(fileName);
-                filesToUpload.add(file);
-            }
-
-            String uploadResponse = MultipartFileUploader.uploadFiles(filesToUpload, dsmRemoteUnit.getPreviewUrl());
-            logger.debug("Response from server: " + uploadResponse);
-
-            //preview URL for now will be used as the file uploads URL
             //Fetch pending ad programs from DB
             //Fetch Records from AdScheduler Table for date (today) and with to_update field == False
             //If found, get screen_id / terminal_id for this pending entry
@@ -291,51 +263,125 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                         //add only a single day's TerminalDetail, could add more days but 1 day for now
                         terminalDetailList.add(terminalDetail);
-                        
-                        
-                        
-                        
-                        
-                        
-                        //we are uploading resources here, right befoer calling Adrequest
-                        for (ProgramDetail.Program progee : programs){
-                            
-                            progee.getResources();
+
+                        //In the interim I think we should fetch all resources and upload to DSM first
+                        //We will need to rectify this code as it is tightly coupling the adDisplay unit to AdCentral
+                        //since it is fetching resources from a machine path as though they were on the same machine e.g.
+                        ///Users/smallgod/Desktop/DSM8_stuff/uploadstuff/97354630322880.mp4"
+                        //preview URL for now will be used as the file uploads URL
+                        //we are uploading resources here, right before calling Adrequest
+                        Set<AdResource> allFileResources = new HashSet<>();
+
+                        for (ProgramDetail.Program progee : programs) {
+
+                            List<AdSetupRequest.ProgramDetail.Program.Resources> fileResources = progee.getResources();
+
+                            for (AdSetupRequest.ProgramDetail.Program.Resources resource : fileResources) {
+
+                                AdResource adRes = new AdResource();
+                                adRes.setResourceName(resource.getResourceDetail());
+                                adRes.setResourceId(resource.getResourceId());
+                                adRes.setUploadId(resource.getUploadId());
+                                adRes.setId(resource.getEntityId());
+                                adRes.setResourceType(ResourceType.convertToEnum(resource.getResourceType()));
+                                adRes.setIsUploadedToDSM(resource.isIsUploadedToDSM());
+
+                                allFileResources.add(adRes);
+                            }
+
                         }
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
-                        
 
-                        //List<AdSetupRequest.ProgramDetail> programDetailList = createProgramDetailList(adSetupRequest);
-                        //List<AdSetupRequest.TerminalDetail> terminalDetailList = createTerminalDetailList(adSetupRequest);
-                        adSetupRequest.setMethodName(APIMethodName.DAILY_SETUP_STEP2.getValue());
-                        adSetupRequest.setProgramDetail(programDetailList);
-                        adSetupRequest.setTerminalDetail(terminalDetailList);
-                        
+                        Set<File> filesToUpload = new HashSet<>();
 
-                        String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
+//                        Map<String, Object> resourcesToUploadProps = new HashMap<>();
+//                        Set<Boolean> isResourceUploaded = new HashSet<>();
+//                        isResourceUploaded.add(Boolean.FALSE);
+//
+//                        resourcesToUploadProps.put("isUploadedToDSM", isResourceUploaded);
+//
+//                        Set<AdResource> fetchedResources = databaseAdapter.fetchBulk(EntityName.AD_RESOURCE, resourcesToUploadProps, columnsToFetch);
+                        String fileUploadDir = "/etc/ug/adcentral/temp/uploads";
+                        //these hardcoded things need to change
 
-                        String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
+                        List<AdResource> resourecesToUpdateInDB = new ArrayList<>();
 
-                        logger.debug("Mega wrapper Response: " + response);
+                        logger.debug("The number of resources for this progee is: " + allFileResources.size());
+
+                        for (AdResource resource : allFileResources) {
+
+                            boolean isUploadedToDSM = resource.isIsUploadedToDSM();
+
+                            if (!isUploadedToDSM) {
+
+                                long id = resource.getId();
+                                String uploadId = resource.getUploadId();
+                                String uploadName = resource.getResourceName();
+                                long fileId = resource.getResourceId();
+
+                                Map<String, Object> resourceProps = new HashMap<>();
+                                resourceProps.put("id", new HashSet<>(Arrays.asList(id)));
+
+                                AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, resourceProps, columnsToFetch);
+
+                                //Double-confirmation from the DB that actually this object is not uploaded yet
+                                if (!adResourceFromDB.isIsUploadedToDSM()) {
+                                    
+                                    logger.debug("Resource, with name: " + adResourceFromDB.getResourceName() + ", file id: " + adResourceFromDB.getResourceId() + ", is not yet uploaded, uploading now!");
+                                    //update this object
+                                    String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
+                                    String newFileName = fileUploadDir + File.separator + fileId;
+                                    //update DB as well with the file resource ID
+
+                                    boolean isFileMoved = FileUtilities.moveFile(fileName, newFileName);
+                                    logger.debug("Renaming of file status: " + isFileMoved);
+
+                                    if (isFileMoved) {
+
+                                        filesToUpload.add(new File(newFileName));
+                                        //delete old file
+                                        //FileUtilities.deleteFile(fileName);
+
+                                        adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
+                                        adResourceFromDB.setResourceId(fileId);
+                                        resourecesToUpdateInDB.add(adResourceFromDB);
+
+                                    }
+                                } else {
+                                    logger.warn("Was about to upload resource that is already uploaded according to the DB isToUpdateDSM value");
+                                }
+                            }
+                        }
+
+                        String uploadResponse = MultipartFileUploader.uploadFiles(filesToUpload, dsmRemoteUnit.getPreviewUrl());
+                        logger.debug("Response from server: " + uploadResponse);
+                        //if response is successful, update the files in the DB
+                        boolean isUpdated = databaseAdapter.SaveOrUpdateBulk(EntityName.AD_RESOURCE, resourecesToUpdateInDB, Boolean.FALSE);
+
+                        if (isUpdated) {
+
+                            //List<AdSetupRequest.ProgramDetail> programDetailList = createProgramDetailList(adSetupRequest);
+                            //List<AdSetupRequest.TerminalDetail> terminalDetailList = createTerminalDetailList(adSetupRequest);
+                            adSetupRequest.setMethodName(APIMethodName.DAILY_SETUP_STEP2.getValue());
+                            adSetupRequest.setProgramDetail(programDetailList);
+                            adSetupRequest.setTerminalDetail(terminalDetailList);
+
+                            String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
+
+                            String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
+
+                            logger.debug("Mega wrapper Response: " + response);
+
+                        } else {
+                            logger.warn("Failed to update the Resources in the database so not sending request");
+                        }
 
                     } else {
                         logger.warn("There are empty or no AdPrograms returned for this schedule: " + scheduleString);
                     }
+
+                    //Update the schedule in DB so that we dont fetch it again
+                    adSchedule.setIsToUpdate(Boolean.FALSE);
+                    databaseAdapter.saveOrUpdateEntity(adSchedule, Boolean.FALSE);
 
                 }
 
@@ -407,10 +453,13 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 Resources resources = prog.new Resources();
                 resources.setResourceDetail(adResource.getResourceName()); //"restaurant_front.mp4"
                 resources.setResourceId(resourceId); //"5480212808"
+                resources.setUploadId(adResource.getUploadId());//Id given when uploading to AdCentral, different from the file Id
                 resources.setEntityId(adResource.getId());
                 resources.setResourceType(adResource.getResourceType().getValue()); //"1" for "VIDEO"
                 resources.setStatus("OLD"); //To-Do see how to get this field based on whether this resource is already uploaded onto DSM or not
                 resources.setSequence(adResource.getSequence());
+                resources.setIsUploadedToDSM(adResource.isIsUploadedToDSM());
+
                 resourcesList.add(resources);
             }
 
@@ -493,7 +542,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param adRequest
      * @return
      */
-    List<AdSetupRequest.ProgramDetail> createProgramDetailList(AdSetupRequest adRequest) {
+    List<AdSetupRequest.ProgramDetail> createProgramDetailListOLD(AdSetupRequest adRequest) {
 
         AdSetupRequest.ProgramDetail progDetail = adRequest.new ProgramDetail();
 
@@ -545,7 +594,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param adRequest
      * @return
      */
-    List<AdSetupRequest.TerminalDetail> createTerminalDetailList(AdSetupRequest adRequest) {
+    List<AdSetupRequest.TerminalDetail> createTerminalDetailListOLD(AdSetupRequest adRequest) {
 
         AdSetupRequest.TerminalDetail playerDetail = adRequest.new TerminalDetail();
         playerDetail.setDisplayDate("2017-01-22");
