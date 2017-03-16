@@ -247,7 +247,8 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         //Terminals
         AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
         terminal.setProgramIdList(programIdList);
-        terminal.setTaskId(839392829);
+        terminal.setTaskIdX(839392829);
+        terminal.setTaskIdY(839392829);
         terminal.setTaskName("First Task");
         terminal.setTerminalId("99877373738333");
         terminal.setTerminalHeight(1920);

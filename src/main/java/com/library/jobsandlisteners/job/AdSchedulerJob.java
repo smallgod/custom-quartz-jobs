@@ -11,6 +11,7 @@ import com.library.httpconnmanager.HttpClientPool;
 import com.library.configs.JobsConfig;
 import com.library.datamodel.Constants.APIMethodName;
 import com.library.datamodel.Constants.EntityName;
+import com.library.datamodel.Constants.FetchStatus;
 import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
@@ -52,6 +53,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import org.joda.time.DateTimeZone;
 import org.joda.time.LocalDate;
 import org.joda.time.LocalTime;
@@ -67,12 +69,12 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
     //this method is for testing purpose only, delete after
     @Override
-    public synchronized void execute(JobExecutionContext jec) throws JobExecutionException {
+    public void execute(JobExecutionContext jec) throws JobExecutionException {
 
         logger.debug("Current thread here is  : " + Thread.currentThread().getName());
         logger.debug("Current thread in state : " + Thread.currentThread().getState().name());
 
-        synchronized (NamedConstants.MUTEX) {
+        synchronized (NamedConstants.FETCH_SCHEDULE_MUTEX) {
 
             try {
 
@@ -94,25 +96,39 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 Set<String> columnsToFetch = new HashSet<>();
                 columnsToFetch.add("ALL");
 
-                //Fetch pending ad programs from DB
-                //Fetch Records from AdScheduler Table for date (today) and with to_update field == False
-                //If found, get screen_id / terminal_id for this pending entry
-                //If found, do the needful and send request to DSM
-                Map<String, Object> pendingAdsProps = new HashMap<>();
+                Set<AdSchedule> fetchedSchedules = null;
 
-                Set<Boolean> toUpdateSet = new HashSet<>();
-                toUpdateSet.add(Boolean.TRUE);
-                Set<LocalDate> displayDateSet = new HashSet<>();
-                displayDateSet.add(DateUtils.getDateNow());
+                try {
+                    if (NamedConstants.FETCH_SCHEDULE_LOCK.tryLock(20, TimeUnit.SECONDS)) {
 
-                pendingAdsProps.put("isToUpdate", toUpdateSet);  //True - If we need to fetch this schedule and update DSM and the row as well
-                pendingAdsProps.put("displayDate", displayDateSet);
+                        //Fetch pending ad programs from DB
+                        //Fetch Records from AdScheduler Table for date (today) and with to_update field == False
+                        //If found, get screen_id / terminal_id for this pending entry
+                        //If found, do the needful and send request to DSM
+                        Map<String, Object> pendingAdsProps = new HashMap<>();
 
-                logger.debug("About to fetch bulk - AdSchedule");
+                        Set<FetchStatus> fetch = new HashSet<>();
+                        fetch.add(FetchStatus.TO_FETCH);
 
-                Set<AdSchedule> fetchedSchedules = databaseAdapter.fetchBulk(EntityName.AD_SCHEDULE, pendingAdsProps, columnsToFetch);
+                        Set<LocalDate> displayDateSet = new HashSet<>();
+                        displayDateSet.add(DateUtils.getDateNow());
+
+                        pendingAdsProps.put("fetchStatus", fetch);  //whether or not we need to fetch this schedule and update DSM and the row as well
+                        pendingAdsProps.put("displayDate", displayDateSet);
+
+                        fetchedSchedules = databaseAdapter.fetchBulk(EntityName.AD_SCHEDULE, pendingAdsProps, columnsToFetch);
+
+                    }
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                } finally {
+                    //release lock
+                    NamedConstants.FETCH_SCHEDULE_LOCK.unlock();
+                }
 
                 if (!(null == fetchedSchedules || fetchedSchedules.isEmpty())) {
+
+                    logger.debug("Sent AdSchedule request, size of schedules got == " + fetchedSchedules.size());
 
                     AdSetupRequest adSetupRequest = new AdSetupRequest();
 
@@ -357,9 +373,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                                 logger.debug("Iterating no. " + iteration + ", for resource id  : " + resource.getUploadId());
 
                                 boolean isUploadedToDSM = resource.isIsUploadedToDSM();
-                                
+
                                 if (!isUploadedToDSM) {
-                                    
+
                                     long id = resource.getId();
                                     String uploadId = resource.getUploadId();
                                     String uploadName = resource.getResourceName();
@@ -403,12 +419,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                                 if (isFileUploaded) {
 
-                                    logger.debug("Going to update resources in DB size: " + resourecesToUpdateInDB.size());
+                                    logger.debug("Going to update resources in DB, no. of resources : " + resourecesToUpdateInDB.size());
 
                                     //boolean isUpdated = databaseAdapter.SaveOrUpdateBulk(EntityName.AD_RESOURCE, resourecesToUpdateInDB, Boolean.FALSE);
-
                                     //logger.debug("resources updated: " + isUpdated);
-
                                     //delete the old files from disk
                                     for (File file : oldFiles) {
                                         FileUtilities.deleteFile(file);
@@ -592,7 +606,8 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
             AdSetupRequest.TerminalDetail.Terminal terminal = terminalDetail.new Terminal();
             terminal.setProgramIdList(programIdList);
-            terminal.setTaskId(adTerminal.getTaskId());
+            terminal.setTaskIdX(adTerminal.getTaskIdX());
+            terminal.setTaskIdY(adTerminal.getTaskIdY());
             terminal.setTaskName(adTerminal.getTerminalName());
             terminal.setTerminalId(adTerminal.getTerminalId());
             terminal.setTerminalHeight(adScreen.getDisplayHeight()); //get these from screen terminal supports
@@ -678,7 +693,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         //Terminals
         AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
         terminal.setProgramIdList(programIdList);
-        terminal.setTaskId(839392829);
+        terminal.setTaskIdX(839392829);
         terminal.setTaskName("First Task");
         terminal.setTerminalId("99877373738333");
         terminal.setTerminalHeight(1920);
