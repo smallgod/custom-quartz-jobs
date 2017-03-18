@@ -99,7 +99,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 Set<AdSchedule> fetchedSchedules = null;
 
                 try {
-                    if (NamedConstants.FETCH_SCHEDULE_LOCK.tryLock(20, TimeUnit.SECONDS)) {
+                    if (NamedConstants.FETCH_SCHEDULE_LOCK.tryLock(30, TimeUnit.SECONDS)) {
+
+                        logger.debug("Thread, " + Thread.currentThread().getName() + ", Inside lock, about to fetch!");
 
                         //Fetch pending ad programs from DB
                         //Fetch Records from AdScheduler Table for date (today) and with to_update field == False
@@ -118,235 +120,258 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                         fetchedSchedules = databaseAdapter.fetchBulk(EntityName.AD_SCHEDULE, pendingAdsProps, columnsToFetch);
 
+                        if (null == fetchedSchedules || fetchedSchedules.isEmpty()) {
+
+                            logger.info("No Pending AdSchedules where fetched from the database");
+                            return;
+
+                        } else {
+
+                            logger.debug("Fetched Records from DB, size: " + fetchedSchedules.size());
+
+                            Set<AdSchedule> schedulesToUpdate = new HashSet<>();
+
+                            for (AdSchedule adSchedule : fetchedSchedules) {
+                                //Update the schedule in DB so that we dont fetch it again
+                                adSchedule.setFetchStatus(FetchStatus.FETCHED);
+                                schedulesToUpdate.add(adSchedule);
+
+                                //databaseAdapter.saveOrUpdateEntity(adSchedule, Boolean.FALSE);
+                            }
+
+                            databaseAdapter.SaveOrUpdateBulk(EntityName.AD_SCHEDULE, schedulesToUpdate, Boolean.FALSE);
+                        }
+
+                    } else {
+                        logger.debug("Lock is held by some other thread, return now!");
+                        return;
                     }
                 } catch (InterruptedException e) {
+
+                    logger.error("Interrrupted exception: " + e.getMessage());
                     e.printStackTrace();
+
                 } finally {
                     //release lock
+                    logger.debug("Releasing lock!");
                     NamedConstants.FETCH_SCHEDULE_LOCK.unlock();
                 }
 
-                if (!(null == fetchedSchedules || fetchedSchedules.isEmpty())) {
+                logger.debug("Sent AdSchedule request, size of schedules got == " + fetchedSchedules.size());
 
-                    logger.debug("Sent AdSchedule request, size of schedules got == " + fetchedSchedules.size());
+                AdSetupRequest adSetupRequest = new AdSetupRequest();
 
-                    AdSetupRequest adSetupRequest = new AdSetupRequest();
+                //Each Schedule represents a single(1) screen for that given date/day
+                for (AdSchedule adSchedule : fetchedSchedules) {
 
-                    //Each Schedule represents a single(1) screen for that given date/day
-                    for (AdSchedule adSchedule : fetchedSchedules) {
+                    //AdScreen adScreen = null;
+                    AdScreen adScreen = adSchedule.getAdScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
+                    LocalDate displayDate = adSchedule.getDisplayDate();
+                    String scheduleString = adSchedule.getScheduleDetail();
+                    long scheduleId = adSchedule.getScheduleId();
 
-                        //AdScreen adScreen = null;
-                        AdScreen adScreen = adSchedule.getAdScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
-                        LocalDate displayDate = adSchedule.getDisplayDate();
-                        String scheduleString = adSchedule.getScheduleDetail();
-                        long scheduleId = adSchedule.getScheduleId();
+                    //remove older times from schedule string
+                    int millisOfDayNow = DateUtils.getTimeNowToNearestMinute().getMillisOfDay();
+                    Map<Integer, Long> mapOfSchedulesAndProgIds = GeneralUtils.convertToMapStringOfSchedulesAndProgIds(scheduleString);
+                    String newerScheduleString = "";
 
-                        //remove older times from schedule string
-                        int millisOfDayNow = DateUtils.getTimeNowToNearestMinute().getMillisOfDay();
-                        Map<Integer, Long> mapOfSchedulesAndProgIds = GeneralUtils.convertToMapStringOfSchedulesAndProgIds(scheduleString);
-                        String newerScheduleString = "";
-                        for (Map.Entry<Integer, Long> entry : mapOfSchedulesAndProgIds.entrySet()) {
+                    for (Map.Entry<Integer, Long> entry : mapOfSchedulesAndProgIds.entrySet()) {
 
-                            int scheduleTime = entry.getKey();
-                            long progEntityId = entry.getValue();
+                        int scheduleTime = entry.getKey();
+                        long progEntityId = entry.getValue();
 
-                            logger.debug("ProgEntityId : " + progEntityId);
-                            logger.debug("Schedule time: " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(scheduleTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + scheduleTime);
-                            logger.debug("millisOfDay  : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(millisOfDayNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + millisOfDayNow);
+                        logger.debug("ProgEntityId : " + progEntityId);
+                        logger.debug("Schedule time: " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(scheduleTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + scheduleTime);
+                        logger.debug("millisOfDay  : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(millisOfDayNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + millisOfDayNow);
 
-                            if (scheduleTime >= millisOfDayNow) {
+                        if (scheduleTime >= millisOfDayNow) {
 
-                                newerScheduleString += (progEntityId + "::" + scheduleTime + ";");
+                            newerScheduleString += (progEntityId + "::" + scheduleTime + ";");
+                        }
+
+                    }
+
+                    if (newerScheduleString.trim().isEmpty()) {
+                        logger.warn("Fetched Schedules for display but found display times already passed now!");
+                        continue;
+                    }
+
+                    logger.debug("Display Date                    : " + displayDate);
+                    logger.debug("Schedule str with all times     : " + scheduleString);
+                    logger.debug("Schedule ID                     : " + scheduleId);
+                    logger.debug("Schedule str, old times removed : " + newerScheduleString);
+
+                    String[] progTimeArray = newerScheduleString.trim().split("\\s*;\\s*"); // ["764::4563::T", "905::2355::F"]
+
+                    logger.debug("ProgTimeArray: " + Arrays.toString(progTimeArray));
+
+                    List<Integer> displayTimeList = new ArrayList<>();
+
+                    Map<Integer, List<Integer>> mapOfProgEntityIdsAndDisplayTime = new HashMap<>();//"1->3445555" prog_entity_id -> displaytime(millis)
+
+                    for (String element : progTimeArray) {
+
+                        int progEntityId = Integer.parseInt(element.split("\\s*::\\s*")[0]);
+                        int displayTime = Integer.parseInt(element.split("\\s*::\\s*")[1]);
+
+                        logger.debug("ProgEntityId: " + progEntityId);
+                        logger.debug("DisplayTime : " + displayTime);
+
+                        if (mapOfProgEntityIdsAndDisplayTime.containsKey(progEntityId)) {
+
+                            displayTimeList = mapOfProgEntityIdsAndDisplayTime.get(progEntityId);
+                        }
+                        displayTimeList.add(displayTime);
+                        mapOfProgEntityIdsAndDisplayTime.put(progEntityId, displayTimeList);
+                    }
+
+                    Map<String, Object> programProps = new HashMap<>();
+                    programProps.put("id", mapOfProgEntityIdsAndDisplayTime.keySet());
+
+                    //Fetch Program details to check which ones we need to generate ids for
+                    Set<AdProgram> fetchedPrograms = databaseAdapter.fetchBulk(EntityName.AD_PROGRAM, programProps, columnsToFetch);
+
+                    if (!(null == fetchedPrograms || fetchedPrograms.isEmpty())) {
+
+                        int numOfFileIdsNeeded = 0;
+
+                        int numOfProgIdsNeeded = fetchedPrograms.size(); //need to check this, some fetched programs might have program Ids and no need to generate
+                        List<String> existingProgIds = new ArrayList<>();
+
+                        //need to have the Ids generated before performing some operations below, cuze they depend on those Ids
+                        for (AdProgram adProgram : fetchedPrograms) {
+                            numOfFileIdsNeeded += adProgram.getNumOfFileResources();
+                            Boolean isDSMUpdated = adProgram.isIsDSMUpdated();
+                            if (isDSMUpdated) {
+                                existingProgIds.add("" + adProgram.getAdvertProgramId());
+
+                                numOfProgIdsNeeded -= 1; //decrement needed program Ids
+                            }
+                        }
+
+                        //logger.debug(">>>>>>>>>>>>>>SSSSSSSSSSSSSSSSSsize of resources is: " + adResourceList.get(0).getAdResourceList().size());
+                        //To-Do         ->> For Existing resources check making sure we don't double upload resources, we will work on this later..
+                        //To-DO         ->> Call to Generate Ids here <<-
+                        //To-DO         ->> Assign the generated Ids to each of the programs and the Resources <<-
+                        //To-DO         ->> Update Each of the Programs and Resources in the DB with these generated Ids <<- I think do this after sending successful to DSM
+                        //generate file ids
+                        /////
+                        /////
+                        /////
+                        GenerateIdRequest generateIdRequest = new GenerateIdRequest();
+                        List<GenerateIdRequest.Params> params = new ArrayList<>();
+
+                        GenerateIdRequest.Params fileIdParams = generateIdRequest.new Params();
+                        fileIdParams.setId(GenerateId.FILE_ID.getValue());
+                        fileIdParams.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
+                        fileIdParams.setNumOfIds(numOfFileIdsNeeded);
+                        fileIdParams.setExistingIdList(new ArrayList<String>()); //To-Do work on this
+                        params.add(fileIdParams);
+
+                        GenerateIdRequest.Params progIdParams = generateIdRequest.new Params();
+                        progIdParams.setId(GenerateId.PROGRAM_ID.getValue());
+                        progIdParams.setIdTypeToGenerate(GenerateIdType.INTEGER.getValue());
+                        progIdParams.setNumOfIds(numOfProgIdsNeeded);
+                        progIdParams.setExistingIdList(existingProgIds);
+                        params.add(progIdParams);
+
+                        generateIdRequest.setMethodName(APIMethodName.GENERATE_ID.getValue());
+                        generateIdRequest.setParams(params);
+
+                        String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
+                        String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
+
+                        GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
+                        List<GeneratedIdResponse.Response> responseList = genIdResponse.getResponse();
+
+                        List<GeneratedIdResponse.Response.ExistingIDCheck> existingProgIdCheck;
+                        List<GeneratedIdResponse.Response.ExistingIDCheck> existingFileIdCheck;
+                        List<String> progIdsGenerated = new ArrayList<>();
+                        List<String> fileIdsGenerated = new ArrayList<>();
+                        int noOfProgIds;
+                        int noOfFileIds;
+
+                        for (GeneratedIdResponse.Response response : responseList) {
+
+                            GenerateId generatedId = GenerateId.convertToEnum(response.getId());
+
+                            switch (generatedId) {
+
+                                case PROGRAM_ID:
+                                    progIdsGenerated = response.getGeneratedIdList();
+                                    existingProgIdCheck = response.getExistingIdCheck();
+                                    noOfProgIds = response.getNumOfIds();
+                                    break;
+
+                                case FILE_ID:
+                                    fileIdsGenerated = response.getGeneratedIdList();
+                                    existingFileIdCheck = response.getExistingIdCheck();
+                                    noOfFileIds = response.getNumOfIds();
+                                    break;
+
+                                default:
+                                    progIdsGenerated = response.getGeneratedIdList();
+                                    existingProgIdCheck = response.getExistingIdCheck();
+                                    noOfProgIds = response.getNumOfIds();
+                                    break;
                             }
 
                         }
 
-                        if (newerScheduleString.trim().isEmpty()) {
-                            logger.warn("Fetched Schedules for display but found display times already passed now!");
+                        List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
+                        List<AdSetupRequest.TerminalDetail> terminalDetailList = new ArrayList<>();
 
-                            //Update the schedule in DB so that we dont fetch it again
-                            adSchedule.setIsToUpdate(Boolean.FALSE);
-                            databaseAdapter.saveOrUpdateEntity(adSchedule, Boolean.FALSE);
+                        AdSetupRequest.ProgramDetail progDetail = adSetupRequest.new ProgramDetail();
 
-                            continue;
+                        List<ProgramDetail.Program> programs = createProgramList(databaseAdapter, progDetail, fetchedPrograms, mapOfProgEntityIdsAndDisplayTime, progIdsGenerated, fileIdsGenerated);
+
+                        progDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT)); //we can have several ProgramDetail with display times, but only doing today/now
+                        progDetail.setProgramIds(programs);
+
+                        //add only a single day's ProgramDetail, could add more days but 1 day for now
+                        programDetailList.add(progDetail);
+
+                        AdSetupRequest.TerminalDetail terminalDetail = adSetupRequest.new TerminalDetail();
+                        terminalDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT));//we can have TerminalDetail with several display times, but only doing today/now
+
+                        Map<Long, List<ProgramDetail.Program>> programScreenMap = new HashMap<>();
+                        programScreenMap.put(adScreen.getId(), programs);
+
+                        List<AdSetupRequest.TerminalDetail.Terminal> terminalList = createTerminalList(terminalDetail, Arrays.asList(adScreen), programScreenMap); //programIdList is from program Ids that have been generated
+                        terminalDetail.setTerminals(terminalList);
+
+                        //add only a single day's TerminalDetail, could add more days but 1 day for now
+                        terminalDetailList.add(terminalDetail);
+
+                        //In the interim I think we should fetch all resources and upload to DSM first
+                        //We will need to rectify this code as it is tightly coupling the adDisplay unit to AdCentral
+                        //since it is fetching resources from a machine path as though they were on the same machine e.g.
+                        ///Users/smallgod/Desktop/DSM8_stuff/uploadstuff/97354630322880.mp4"
+                        //preview URL for now will be used as the file uploads URL
+                        //we are uploading resources here, right before calling Adrequest
+                        Set<AdResource> allFileResources = new HashSet<>();
+
+                        for (ProgramDetail.Program progee : programs) {
+
+                            List<AdSetupRequest.ProgramDetail.Program.Resources> fileResources = progee.getResources();
+
+                            for (AdSetupRequest.ProgramDetail.Program.Resources resource : fileResources) {
+
+                                AdResource adRes = new AdResource();
+                                adRes.setResourceName(resource.getResourceDetail());
+                                adRes.setResourceId(resource.getResourceId());
+                                adRes.setUploadId(resource.getUploadId());
+                                adRes.setId(resource.getEntityId());
+                                adRes.setResourceType(ResourceType.convertToEnum(resource.getResourceType()));
+                                adRes.setIsUploadedToDSM(resource.isIsUploadedToDSM());
+
+                                allFileResources.add(adRes);
+                            }
+
                         }
 
-                        logger.debug("Display Date                    : " + displayDate);
-                        logger.debug("Schedule str with all times     : " + scheduleString);
-                        logger.debug("Schedule ID                     : " + scheduleId);
-                        logger.debug("Schedule str, old times removed : " + newerScheduleString);
-
-                        String[] progTimeArray = newerScheduleString.trim().split("\\s*;\\s*"); // ["764::4563::T", "905::2355::F"]
-
-                        logger.debug("ProgTimeArray: " + Arrays.toString(progTimeArray));
-
-                        List<Integer> displayTimeList = new ArrayList<>();
-
-                        Map<Integer, List<Integer>> mapOfProgEntityIdsAndDisplayTime = new HashMap<>();//"1->3445555" prog_entity_id -> displaytime(millis)
-
-                        for (String element : progTimeArray) {
-
-                            int progEntityId = Integer.parseInt(element.split("\\s*::\\s*")[0]);
-                            int displayTime = Integer.parseInt(element.split("\\s*::\\s*")[1]);
-
-                            logger.debug("ProgEntityId: " + progEntityId);
-                            logger.debug("DisplayTime : " + displayTime);
-
-                            if (mapOfProgEntityIdsAndDisplayTime.containsKey(progEntityId)) {
-
-                                displayTimeList = mapOfProgEntityIdsAndDisplayTime.get(progEntityId);
-                            }
-                            displayTimeList.add(displayTime);
-                            mapOfProgEntityIdsAndDisplayTime.put(progEntityId, displayTimeList);
-                        }
-
-                        Map<String, Object> programProps = new HashMap<>();
-                        programProps.put("id", mapOfProgEntityIdsAndDisplayTime.keySet());
-
-                        //Fetch Program details to check which ones we need to generate ids for
-                        Set<AdProgram> fetchedPrograms = databaseAdapter.fetchBulk(EntityName.AD_PROGRAM, programProps, columnsToFetch);
-
-                        if (!(null == fetchedPrograms || fetchedPrograms.isEmpty())) {
-
-                            int numOfFileIdsNeeded = 0;
-
-                            int numOfProgIdsNeeded = fetchedPrograms.size(); //need to check this, some fetched programs might have program Ids and no need to generate
-                            List<String> existingProgIds = new ArrayList<>();
-
-                            //need to have the Ids generated before performing some operations below, cuze they depend on those Ids
-                            for (AdProgram adProgram : fetchedPrograms) {
-                                numOfFileIdsNeeded += adProgram.getNumOfFileResources();
-                                Boolean isDSMUpdated = adProgram.isIsDSMUpdated();
-                                if (isDSMUpdated) {
-                                    existingProgIds.add("" + adProgram.getAdvertProgramId());
-
-                                    numOfProgIdsNeeded -= 1; //decrement needed program Ids
-                                }
-                            }
-
-                            //logger.debug(">>>>>>>>>>>>>>SSSSSSSSSSSSSSSSSsize of resources is: " + adResourceList.get(0).getAdResourceList().size());
-                            //To-Do         ->> For Existing resources check making sure we don't double upload resources, we will work on this later..
-                            //To-DO         ->> Call to Generate Ids here <<-
-                            //To-DO         ->> Assign the generated Ids to each of the programs and the Resources <<-
-                            //To-DO         ->> Update Each of the Programs and Resources in the DB with these generated Ids <<- I think do this after sending successful to DSM
-                            //generate file ids
-                            /////
-                            /////
-                            /////
-                            GenerateIdRequest generateIdRequest = new GenerateIdRequest();
-                            List<GenerateIdRequest.Params> params = new ArrayList<>();
-
-                            GenerateIdRequest.Params fileIdParams = generateIdRequest.new Params();
-                            fileIdParams.setId(GenerateId.FILE_ID.getValue());
-                            fileIdParams.setIdTypeToGenerate(GenerateIdType.LONG.getValue());
-                            fileIdParams.setNumOfIds(numOfFileIdsNeeded);
-                            fileIdParams.setExistingIdList(new ArrayList<String>()); //To-Do work on this
-                            params.add(fileIdParams);
-
-                            GenerateIdRequest.Params progIdParams = generateIdRequest.new Params();
-                            progIdParams.setId(GenerateId.PROGRAM_ID.getValue());
-                            progIdParams.setIdTypeToGenerate(GenerateIdType.INTEGER.getValue());
-                            progIdParams.setNumOfIds(numOfProgIdsNeeded);
-                            progIdParams.setExistingIdList(existingProgIds);
-                            params.add(progIdParams);
-
-                            generateIdRequest.setMethodName(APIMethodName.GENERATE_ID.getValue());
-                            generateIdRequest.setParams(params);
-
-                            String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
-                            String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
-
-                            GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
-                            List<GeneratedIdResponse.Response> responseList = genIdResponse.getResponse();
-
-                            List<GeneratedIdResponse.Response.ExistingIDCheck> existingProgIdCheck;
-                            List<GeneratedIdResponse.Response.ExistingIDCheck> existingFileIdCheck;
-                            List<String> progIdsGenerated = new ArrayList<>();
-                            List<String> fileIdsGenerated = new ArrayList<>();
-                            int noOfProgIds;
-                            int noOfFileIds;
-
-                            for (GeneratedIdResponse.Response response : responseList) {
-
-                                GenerateId generatedId = GenerateId.convertToEnum(response.getId());
-
-                                switch (generatedId) {
-
-                                    case PROGRAM_ID:
-                                        progIdsGenerated = response.getGeneratedIdList();
-                                        existingProgIdCheck = response.getExistingIdCheck();
-                                        noOfProgIds = response.getNumOfIds();
-                                        break;
-
-                                    case FILE_ID:
-                                        fileIdsGenerated = response.getGeneratedIdList();
-                                        existingFileIdCheck = response.getExistingIdCheck();
-                                        noOfFileIds = response.getNumOfIds();
-                                        break;
-
-                                    default:
-                                        progIdsGenerated = response.getGeneratedIdList();
-                                        existingProgIdCheck = response.getExistingIdCheck();
-                                        noOfProgIds = response.getNumOfIds();
-                                        break;
-                                }
-
-                            }
-
-                            List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
-                            List<AdSetupRequest.TerminalDetail> terminalDetailList = new ArrayList<>();
-
-                            AdSetupRequest.ProgramDetail progDetail = adSetupRequest.new ProgramDetail();
-
-                            List<ProgramDetail.Program> programs = createProgramList(databaseAdapter, progDetail, fetchedPrograms, mapOfProgEntityIdsAndDisplayTime, progIdsGenerated, fileIdsGenerated);
-
-                            progDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT)); //we can have several ProgramDetail with display times, but only doing today/now
-                            progDetail.setProgramIds(programs);
-
-                            //add only a single day's ProgramDetail, could add more days but 1 day for now
-                            programDetailList.add(progDetail);
-
-                            AdSetupRequest.TerminalDetail terminalDetail = adSetupRequest.new TerminalDetail();
-                            terminalDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT));//we can have TerminalDetail with several display times, but only doing today/now
-
-                            Map<Long, List<ProgramDetail.Program>> programScreenMap = new HashMap<>();
-                            programScreenMap.put(adScreen.getId(), programs);
-
-                            List<AdSetupRequest.TerminalDetail.Terminal> terminalList = createTerminalList(terminalDetail, Arrays.asList(adScreen), programScreenMap); //programIdList is from program Ids that have been generated
-                            terminalDetail.setTerminals(terminalList);
-
-                            //add only a single day's TerminalDetail, could add more days but 1 day for now
-                            terminalDetailList.add(terminalDetail);
-
-                            //In the interim I think we should fetch all resources and upload to DSM first
-                            //We will need to rectify this code as it is tightly coupling the adDisplay unit to AdCentral
-                            //since it is fetching resources from a machine path as though they were on the same machine e.g.
-                            ///Users/smallgod/Desktop/DSM8_stuff/uploadstuff/97354630322880.mp4"
-                            //preview URL for now will be used as the file uploads URL
-                            //we are uploading resources here, right before calling Adrequest
-                            Set<AdResource> allFileResources = new HashSet<>();
-
-                            for (ProgramDetail.Program progee : programs) {
-
-                                List<AdSetupRequest.ProgramDetail.Program.Resources> fileResources = progee.getResources();
-
-                                for (AdSetupRequest.ProgramDetail.Program.Resources resource : fileResources) {
-
-                                    AdResource adRes = new AdResource();
-                                    adRes.setResourceName(resource.getResourceDetail());
-                                    adRes.setResourceId(resource.getResourceId());
-                                    adRes.setUploadId(resource.getUploadId());
-                                    adRes.setId(resource.getEntityId());
-                                    adRes.setResourceType(ResourceType.convertToEnum(resource.getResourceType()));
-                                    adRes.setIsUploadedToDSM(resource.isIsUploadedToDSM());
-
-                                    allFileResources.add(adRes);
-                                }
-
-                            }
-
-                            Set<File> oldFiles = new HashSet<>();
-                            Set<File> filesToUpload = new HashSet<>();
+                        Set<File> oldFiles = new HashSet<>();
+                        Set<File> filesToUpload = new HashSet<>();
 
 //                        Map<String, Object> resourcesToUploadProps = new HashMap<>();
 //                        Set<Boolean> isResourceUploaded = new HashSet<>();
@@ -355,112 +380,104 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 //                        resourcesToUploadProps.put("isUploadedToDSM", isResourceUploaded);
 //
 //                        Set<AdResource> fetchedResources = databaseAdapter.fetchBulk(EntityName.AD_RESOURCE, resourcesToUploadProps, columnsToFetch);
-                            String fileUploadDir = "/etc/ug/adcentral/temp/uploads";
-                            //these hardcoded things need to change
+                        String fileUploadDir = "/etc/ug/adcentral/temp/uploads";
+                        //these hardcoded things need to change
 
-                            List<AdResource> resourecesToUpdateInDB = new ArrayList<>();
+                        List<AdResource> resourecesToUpdateInDB = new ArrayList<>();
 
-                            logger.debug("The number of resources for this progee is: " + allFileResources.size());
-                            logger.debug("And the progee files are:");
+                        logger.debug("The number of resources for this progee is: " + allFileResources.size());
+                        logger.debug("And the progee files are:");
 
-                            //get all resources for this program
-                            int iteration = 1;
+                        //get all resources for this program
+                        int iteration = 1;
 
-                            Set<Long> ids = new HashSet<>();
-                            for (AdResource resource : allFileResources) {
+                        Set<Long> ids = new HashSet<>();
+                        for (AdResource resource : allFileResources) {
 
-                                logger.debug("Iteration no. " + iteration + ", for resource name: " + resource.getResourceName());
-                                logger.debug("Iterating no. " + iteration + ", for resource id  : " + resource.getUploadId());
+                            logger.debug("Iteration no. " + iteration + ", for resource name: " + resource.getResourceName());
+                            logger.debug("Iterating no. " + iteration + ", for resource id  : " + resource.getUploadId());
 
-                                boolean isUploadedToDSM = resource.isIsUploadedToDSM();
+                            boolean isUploadedToDSM = resource.isIsUploadedToDSM();
 
-                                if (!isUploadedToDSM) {
+                            if (!isUploadedToDSM) {
 
-                                    long id = resource.getId();
-                                    String uploadId = resource.getUploadId();
-                                    String uploadName = resource.getResourceName();
-                                    long fileId = resource.getResourceId();
+                                long id = resource.getId();
+                                String uploadId = resource.getUploadId();
+                                String uploadName = resource.getResourceName();
+                                long fileId = resource.getResourceId();
 
-                                    logger.debug("Resource, with name: " + resource.getResourceName() + ", file id: " + resource.getResourceId() + ", is not yet uploaded, uploading now!");
-                                    //update this object
-                                    String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
-                                    String newFileName = fileUploadDir + File.separator + fileId;
+                                logger.debug("Resource, with name: " + resource.getResourceName() + ", file id: " + resource.getResourceId() + ", is not yet uploaded, uploading now!");
+                                //update this object
+                                String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
+                                String newFileName = fileUploadDir + File.separator + fileId;
 
-                                    if (!FileUtilities.existFile(newFileName)) {
+                                if (!FileUtilities.existFile(newFileName)) {
 
-                                        boolean isCopied = FileUtilities.copyFile(fileName, newFileName);
-                                        logger.debug("Renaming of file status: " + isCopied);
+                                    boolean isCopied = FileUtilities.copyFile(fileName, newFileName);
+                                    logger.debug("Renaming of file status: " + isCopied);
 
-                                        if (isCopied) {
+                                    if (isCopied) {
 
-                                            filesToUpload.add(new File(newFileName));
-                                            oldFiles.add(new File(fileName));
+                                        filesToUpload.add(new File(newFileName));
+                                        oldFiles.add(new File(fileName));
 
-                                        }
                                     }
-
-                                    Map<String, Object> resourceProps = new HashMap<>();
-                                    resourceProps.put("id", new HashSet<>(Arrays.asList(id)));
-
-                                    AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, resourceProps, columnsToFetch);
-
-                                    adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
-                                    adResourceFromDB.setResourceId(fileId);
-                                    resourecesToUpdateInDB.add(adResourceFromDB);
-                                    databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
-
-                                    ids.add(id);
-
-                                    iteration++;
                                 }
 
-                                boolean isFileUploaded = MultipartFileUploader.uploadFiles(filesToUpload, dsmRemoteUnit.getPreviewUrl());
-                                logger.debug("Are files uploaded to DSM server: " + isFileUploaded);
+                                Map<String, Object> resourceProps = new HashMap<>();
+                                resourceProps.put("id", new HashSet<>(Arrays.asList(id)));
 
-                                if (isFileUploaded) {
+                                AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, resourceProps, columnsToFetch);
 
-                                    logger.debug("Going to update resources in DB, no. of resources : " + resourecesToUpdateInDB.size());
+                                adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
+                                adResourceFromDB.setResourceId(fileId);
+                                resourecesToUpdateInDB.add(adResourceFromDB);
+                                databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
 
-                                    //boolean isUpdated = databaseAdapter.SaveOrUpdateBulk(EntityName.AD_RESOURCE, resourecesToUpdateInDB, Boolean.FALSE);
-                                    //logger.debug("resources updated: " + isUpdated);
-                                    //delete the old files from disk
-                                    for (File file : oldFiles) {
-                                        FileUtilities.deleteFile(file);
-                                    }
+                                ids.add(id);
 
-                                    adSetupRequest.setMethodName(APIMethodName.DAILY_SETUP_STEP2.getValue());
-                                    adSetupRequest.setProgramDetail(programDetailList);
-                                    adSetupRequest.setTerminalDetail(terminalDetailList);
+                                iteration++;
+                            }
 
-                                    String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
+                            boolean isFileUploaded = MultipartFileUploader.uploadFiles(filesToUpload, dsmRemoteUnit.getPreviewUrl());
+                            logger.debug("Are files uploaded to DSM server: " + isFileUploaded);
 
-                                    String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
+                            if (isFileUploaded) {
 
-                                    logger.debug("Mega wrapper Response: " + response);
+                                logger.debug("Going to update resources in DB, no. of resources : " + resourecesToUpdateInDB.size());
 
-                                } else {
-
-                                    //delete the old files from disk
-                                    for (File file : filesToUpload) {
-                                        FileUtilities.deleteFile(file);
-                                    }
-                                    logger.warn("Failed to upload files to DSM, deleting the new files that were created on disk AND NOT sending request to DSM");
+                                //boolean isUpdated = databaseAdapter.SaveOrUpdateBulk(EntityName.AD_RESOURCE, resourecesToUpdateInDB, Boolean.FALSE);
+                                //logger.debug("resources updated: " + isUpdated);
+                                //delete the old files from disk
+                                for (File file : oldFiles) {
+                                    FileUtilities.deleteFile(file);
                                 }
 
-                            }//end for-loop through resources 
+                                adSetupRequest.setMethodName(APIMethodName.DAILY_SETUP_STEP2.getValue());
+                                adSetupRequest.setProgramDetail(programDetailList);
+                                adSetupRequest.setTerminalDetail(terminalDetailList);
 
-                        } else {
-                            logger.warn("There are empty or no AdPrograms returned for this schedule: " + newerScheduleString);
-                        }
+                                String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
 
-                        //Update the schedule in DB so that we dont fetch it again
-                        adSchedule.setIsToUpdate(Boolean.FALSE);
-                        databaseAdapter.saveOrUpdateEntity(adSchedule, Boolean.FALSE);
+                                String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
 
+                                logger.debug("Mega wrapper Response: " + response);
+
+                            } else {
+
+                                //delete the old files from disk
+                                for (File file : filesToUpload) {
+                                    FileUtilities.deleteFile(file);
+                                }
+                                logger.warn("Failed to upload files to DSM, deleting the new files that were created on disk AND NOT sending request to DSM");
+                            }
+
+                        }//end for-loop through resources 
+
+                    } else {
+                        logger.warn("There are empty or no AdPrograms returned for this schedule: " + newerScheduleString);
                     }
 
-                } else {
-                    logger.info("No Pending AdSchedules where fetched from the database");
                 }
 
             } catch (Exception ex) {
