@@ -171,7 +171,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                     long scheduleId = adSchedule.getScheduleId();
 
                     //remove older times from schedule string
-                    int millisOfDayNow = DateUtils.getTimeNowToNearestMinute().getMillisOfDay();
+                    //int millisOfDayNow = DateUtils.getTimeNowToNearestMinute().getMillisOfDay();
+                    int millisOfDayNow = DateUtils.getTimeNow().getMillisOfDay();
+                    
                     Map<Integer, Long> mapOfSchedulesAndProgIds = GeneralUtils.convertToMapStringOfSchedulesAndProgIds(scheduleString);
                     String newerScheduleString = "";
 
@@ -181,9 +183,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         long progEntityId = entry.getValue();
 
                         logger.debug("ProgEntityId : " + progEntityId);
-                        logger.debug("Schedule time: " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(scheduleTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + scheduleTime);
                         logger.debug("millisOfDay  : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(millisOfDayNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + millisOfDayNow);
-
+                        logger.debug("Schedule time: " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(scheduleTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + scheduleTime);
+                        
                         if (scheduleTime >= millisOfDayNow) {
 
                             newerScheduleString += (progEntityId + "::" + scheduleTime + ";");
