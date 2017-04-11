@@ -9,6 +9,7 @@ import com.library.datamodel.Constants.ProcessingUnitState;
 import com.library.datamodel.Json.AdFetchRequest;
 import com.library.httpconnmanager.HttpClientPool;
 import com.library.configs.JobsConfig;
+import com.library.customexception.MyCustomException;
 import com.library.datamodel.Constants.APIMethodName;
 import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.FetchStatus;
@@ -173,7 +174,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                     //remove older times from schedule string
                     //int millisOfDayNow = DateUtils.getTimeNowToNearestMinute().getMillisOfDay();
                     int millisOfDayNow = DateUtils.getTimeNow().getMillisOfDay();
-                    
+
                     Map<Integer, Long> mapOfSchedulesAndProgIds = GeneralUtils.convertToMapStringOfSchedulesAndProgIds(scheduleString);
                     String newerScheduleString = "";
 
@@ -185,7 +186,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         logger.debug("ProgEntityId : " + progEntityId);
                         logger.debug("millisOfDay  : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(millisOfDayNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + millisOfDayNow);
                         logger.debug("Schedule time: " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(scheduleTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + scheduleTime);
-                        
+
                         if (scheduleTime >= millisOfDayNow) {
 
                             newerScheduleString += (progEntityId + "::" + scheduleTime + ";");
@@ -498,7 +499,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param adResources
      * @return
      */
-    List<ProgramDetail.Program> createProgramList(DatabaseAdapter databaseAdapter, AdSetupRequest.ProgramDetail progDetail, Set<AdProgram> adProgramList, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime, List<String> progIdsGenerated, List<String> fileIdsGenerated) {
+    List<ProgramDetail.Program> createProgramList(DatabaseAdapter databaseAdapter, AdSetupRequest.ProgramDetail progDetail, Set<AdProgram> adProgramList, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime, List<String> progIdsGenerated, List<String> fileIdsGenerated) throws MyCustomException {
 
         List<ProgramDetail.Program> programList = new ArrayList<>();
         ProgramDetail.Program prog;
