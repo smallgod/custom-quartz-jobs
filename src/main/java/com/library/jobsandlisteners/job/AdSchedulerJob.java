@@ -58,6 +58,7 @@ import java.util.concurrent.TimeUnit;
 import org.joda.time.DateTimeZone;
 import org.joda.time.LocalDate;
 import org.joda.time.LocalTime;
+import org.openide.util.Exceptions;
 
 /**
  * The class doing the work
@@ -100,6 +101,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 Set<AdSchedule> fetchedSchedules = null;
 
                 try {
+
                     if (NamedConstants.FETCH_SCHEDULE_LOCK.tryLock(30, TimeUnit.SECONDS)) {
 
                         logger.debug("Thread, " + Thread.currentThread().getName() + ", Inside lock, about to fetch!");
@@ -147,6 +149,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         logger.debug("Lock is held by some other thread, return now!");
                         return;
                     }
+
                 } catch (InterruptedException e) {
 
                     logger.error("Interrrupted exception: " + e.getMessage());
@@ -345,137 +348,31 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                         //add only a single day's TerminalDetail, could add more days but 1 day for now
                         terminalDetailList.add(terminalDetail);
-
+                    
                         //In the interim I think we should fetch all resources and upload to DSM first
                         //We will need to rectify this code as it is tightly coupling the adDisplay unit to AdCentral
                         //since it is fetching resources from a machine path as though they were on the same machine e.g.
                         ///Users/smallgod/Desktop/DSM8_stuff/uploadstuff/97354630322880.mp4"
                         //preview URL for now will be used as the file uploads URL
                         //we are uploading resources here, right before calling Adrequest
-                        Set<AdResource> allFileResources = new HashSet<>();
+                        //upload files to DSM if any
+                        List<AdSetupRequest.ProgramDetail.Program.Resources> allUploadableMediaResources = getAllUploadableMediaResources(programs);
 
-                        for (ProgramDetail.Program progee : programs) {
+                        if (!(allUploadableMediaResources == null || allUploadableMediaResources.isEmpty())) {
 
-                            List<AdSetupRequest.ProgramDetail.Program.Resources> fileResources = progee.getResources();
-
-                            for (AdSetupRequest.ProgramDetail.Program.Resources resource : fileResources) {
-
-                                AdResource adRes = new AdResource();
-                                adRes.setResourceName(resource.getResourceDetail());
-                                adRes.setResourceId(resource.getResourceId());
-                                adRes.setUploadId(resource.getUploadId());
-                                adRes.setId(resource.getEntityId());
-                                adRes.setResourceType(ResourceType.convertToEnum(resource.getResourceType()));
-                                adRes.setIsUploadedToDSM(resource.isIsUploadedToDSM());
-
-                                allFileResources.add(adRes);
-                            }
-
+                            uploadMediaResources(allUploadableMediaResources, databaseAdapter, dsmRemoteUnit);
                         }
+                        
+                         //Send schedule Request to DSM
+                        adSetupRequest.setMethodName(APIMethodName.UPLOAD_SCHEDULE_TO_DSM.getValue());
+                        adSetupRequest.setProgramDetail(programDetailList);
+                        adSetupRequest.setTerminalDetail(terminalDetailList);
 
-                        Set<File> oldFiles = new HashSet<>();
-                        Set<File> filesToUpload = new HashSet<>();
+                        String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
 
-//                        Map<String, Object> resourcesToUploadProps = new HashMap<>();
-//                        Set<Boolean> isResourceUploaded = new HashSet<>();
-//                        isResourceUploaded.add(Boolean.FALSE);
-//
-//                        resourcesToUploadProps.put("isUploadedToDSM", isResourceUploaded);
-//
-//                        Set<AdResource> fetchedResources = databaseAdapter.fetchBulk(EntityName.AD_RESOURCE, resourcesToUploadProps, columnsToFetch);
-                        String fileUploadDir = "/etc/ug/adcentral/temp/uploads";
-                        //these hardcoded things need to change
+                        String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
 
-                        List<AdResource> resourecesToUpdateInDB = new ArrayList<>();
-
-                        logger.debug("The number of resources for this progee is: " + allFileResources.size());
-                        logger.debug("And the progee files are:");
-
-                        //get all resources for this program
-                        int iteration = 1;
-
-                        Set<Long> ids = new HashSet<>();
-                        for (AdResource resource : allFileResources) {
-
-                            logger.debug("Iteration no. " + iteration + ", for resource name: " + resource.getResourceName());
-                            logger.debug("Iterating no. " + iteration + ", for resource id  : " + resource.getUploadId());
-
-                            boolean isUploadedToDSM = resource.isIsUploadedToDSM();
-
-                            if (!isUploadedToDSM) {
-
-                                long id = resource.getId();
-                                String uploadId = resource.getUploadId();
-                                String uploadName = resource.getResourceName();
-                                long fileId = resource.getResourceId();
-
-                                logger.debug("Resource, with name: " + resource.getResourceName() + ", file id: " + resource.getResourceId() + ", is not yet uploaded, uploading now!");
-                                //update this object
-                                String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
-                                String newFileName = fileUploadDir + File.separator + fileId;
-
-                                if (!FileUtilities.existFile(newFileName)) {
-
-                                    boolean isCopied = FileUtilities.copyFile(fileName, newFileName);
-                                    logger.debug("Renaming of file status: " + isCopied);
-
-                                    if (isCopied) {
-
-                                        filesToUpload.add(new File(newFileName));
-                                        oldFiles.add(new File(fileName));
-
-                                    }
-                                }
-
-                                Map<String, Object> resourceProps = new HashMap<>();
-                                resourceProps.put("id", new HashSet<>(Arrays.asList(id)));
-
-                                AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, resourceProps, columnsToFetch);
-
-                                adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
-                                adResourceFromDB.setResourceId(fileId);
-                                resourecesToUpdateInDB.add(adResourceFromDB);
-                                databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
-
-                                ids.add(id);
-
-                                iteration++;
-                            }
-
-                            boolean isFileUploaded = MultipartFileUploader.uploadFiles(filesToUpload, dsmRemoteUnit.getPreviewUrl());
-                            logger.debug("Are files uploaded to DSM server: " + isFileUploaded);
-
-                            if (isFileUploaded) {
-
-                                logger.debug("Going to update resources in DB, no. of resources : " + resourecesToUpdateInDB.size());
-
-                                //boolean isUpdated = databaseAdapter.SaveOrUpdateBulk(EntityName.AD_RESOURCE, resourecesToUpdateInDB, Boolean.FALSE);
-                                //logger.debug("resources updated: " + isUpdated);
-                                //delete the old files from disk
-                                for (File file : oldFiles) {
-                                    FileUtilities.deleteFile(file);
-                                }
-
-                                adSetupRequest.setMethodName(APIMethodName.DAILY_SETUP_STEP2.getValue());
-                                adSetupRequest.setProgramDetail(programDetailList);
-                                adSetupRequest.setTerminalDetail(terminalDetailList);
-
-                                String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
-
-                                String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
-
-                                logger.debug("Mega wrapper Response: " + response);
-
-                            } else {
-
-                                //delete the old files from disk
-                                for (File file : filesToUpload) {
-                                    FileUtilities.deleteFile(file);
-                                }
-                                logger.warn("Failed to upload files to DSM, deleting the new files that were created on disk AND NOT sending request to DSM");
-                            }
-
-                        }//end for-loop through resources 
+                        logger.debug("Mega wrapper Response: " + response);
 
                     } else {
                         logger.warn("There are empty or no AdPrograms returned for this schedule: " + newerScheduleString);
@@ -483,6 +380,8 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 }
 
+            } catch (MyCustomException ex) {
+                Exceptions.printStackTrace(ex);
             } catch (Exception ex) {
                 logger.error("An Error occurred in AdScheduleJob: " + ex.getMessage());
                 ex.printStackTrace();
@@ -490,6 +389,119 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         }
 
+    }
+
+    /**
+     * 
+     * @param allUploadableMediaResources
+     * @param databaseAdapter
+     * @param dsmRemoteUnit
+     * @throws MyCustomException 
+     */
+    public void uploadMediaResources(List<AdSetupRequest.ProgramDetail.Program.Resources> allUploadableMediaResources, DatabaseAdapter databaseAdapter, RemoteRequest dsmRemoteUnit) throws MyCustomException {
+
+        Set<String> columnsToFetch = new HashSet<>();
+        columnsToFetch.add("ALL");
+
+        Set<File> oldFiles = new HashSet<>();
+        Set<File> filesToUpload = new HashSet<>();
+
+        List<AdResource> resourecesToUpdateInDB = new ArrayList<>();
+
+        String fileUploadDir = NamedConstants.FILE_UPLOAD_DIR;
+        int iteration = 1;
+        Set<Long> ids = new HashSet<>();
+        for (AdSetupRequest.ProgramDetail.Program.Resources resource : allUploadableMediaResources) {
+
+            logger.debug("Iteration no. " + iteration + ", for resource name: " + resource.getResourceDetail());
+            logger.debug("Iterating no. " + iteration + ", for resource id  : " + resource.getUploadId());
+
+            boolean isUploadedToDSM = resource.isIsUploadedToDSM();
+
+            if (!isUploadedToDSM) {
+
+                long id = resource.getEntityId();
+                String uploadId = resource.getUploadId();
+                String uploadName = resource.getResourceDetail();
+                long fileId = resource.getResourceId();
+
+                logger.debug("Resource, with name: " + resource.getResourceDetail() + ", file id: " + resource.getResourceId() + ", is not yet uploaded, uploading now!");
+                //update this object
+                String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
+                String newFileName = fileUploadDir + File.separator + fileId;
+
+                if (!FileUtilities.existFile(newFileName)) {
+
+                    boolean isCopied = FileUtilities.copyFile(fileName, newFileName);
+                    logger.debug("Renaming of file status: " + isCopied);
+
+                    if (isCopied) {
+
+                        filesToUpload.add(new File(newFileName));
+                        oldFiles.add(new File(fileName));
+
+                    }
+                }
+
+                Map<String, Object> resourceProps = new HashMap<>();
+                resourceProps.put("id", new HashSet<>(Arrays.asList(id)));
+
+                AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, resourceProps, columnsToFetch);
+
+                adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
+                adResourceFromDB.setResourceId(fileId);
+                resourecesToUpdateInDB.add(adResourceFromDB);
+                databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
+
+                ids.add(id);
+
+                iteration++;
+            }
+
+            boolean isFileUploaded = MultipartFileUploader.uploadFiles(filesToUpload, dsmRemoteUnit.getPreviewUrl());
+            logger.debug("Are files uploaded to DSM server: " + isFileUploaded);
+
+            if (isFileUploaded) {
+
+                logger.debug("Going to update resources in DB, no. of resources : " + resourecesToUpdateInDB.size());
+
+                //boolean isUpdated = databaseAdapter.SaveOrUpdateBulk(EntityName.AD_RESOURCE, resourecesToUpdateInDB, Boolean.FALSE);
+                //logger.debug("resources updated: " + isUpdated);
+                //delete the old files from disk
+                for (File file : oldFiles) {
+                    FileUtilities.deleteFile(file);
+                }
+
+            } else {
+
+                //delete the old files from disk
+                for (File file : filesToUpload) {
+                    FileUtilities.deleteFile(file);
+                }
+                logger.warn("Failed to upload files to DSM, deleting the new files that were created on disk AND NOT sending request to DSM");
+            }
+
+        }//end for-loop through resources 
+    }
+
+    /**
+     * Get all uploadable media resources from all the programs
+     *
+     * @param programs
+     * @return
+     */
+    List<AdSetupRequest.ProgramDetail.Program.Resources> getAllUploadableMediaResources(List<ProgramDetail.Program> programs) {
+
+        List<AdSetupRequest.ProgramDetail.Program.Resources> allUploadableMediaResources = new ArrayList<>();
+
+        for (ProgramDetail.Program eachProgram : programs) {
+
+            List<AdSetupRequest.ProgramDetail.Program.Resources> programResources = eachProgram.getResources();
+            allUploadableMediaResources.addAll(programResources);
+
+        }
+
+        return allUploadableMediaResources;
     }
 
     /**
@@ -511,11 +523,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             prog = progDetail.new Program();
 
             long adLength = adProgram.getAdLength();
-            long id = adProgram.getId();
+            //long id = adProgram.getId();
+            int campaignId = adProgram.getCampaignId();
             ProgDisplayLayout displayLayout = adProgram.getDisplayLayout();
-
-            Set<AdText> textResources = databaseAdapter.fetchResources(EntityName.AD_TEXT, AdText.FETCH_TEXT, "id", id);
-            Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RESOURCE, "id", id);
 
             //for small values we can just cast a Long to an int, for large values be ware, we loose precision and accuracy so we don't do it
             long progEntityId = adProgram.getId();
@@ -545,7 +555,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 case FULL_SCREEN:
                     textList = new ArrayList<>();
-                    resourcesList = getResourcesList(prog, adResources, fileIdsGenerated);
+                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, databaseAdapter);
                     break;
 
                 case AV_ONLY:
@@ -554,23 +564,23 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                     break;
 
                 case FULLSCREEN_TEXT:
-                    textList = getTextList(prog, textResources);
-                    resourcesList = getResourcesList(prog, adResources, fileIdsGenerated);
+                    textList = getTextList(prog, campaignId, databaseAdapter);
+                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, databaseAdapter);
                     break;
 
                 case TEXT_ONLY:
-                    textList = getTextList(prog, textResources);
+                    textList = getTextList(prog, campaignId, databaseAdapter);
                     resourcesList = new ArrayList<>();
                     break;
 
                 case THREE_SPLIT:
-                    textList = getTextList(prog, textResources);
-                    resourcesList = getResourcesList(prog, adResources, fileIdsGenerated);
+                    textList = getTextList(prog, campaignId, databaseAdapter);
+                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, databaseAdapter);
                     break;
 
                 case TWO_SPLIT:
-                    textList = getTextList(prog, textResources);
-                    resourcesList = getResourcesList(prog, adResources, fileIdsGenerated);
+                    textList = getTextList(prog, campaignId, databaseAdapter);
+                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, databaseAdapter);
                     break;
 
                 default:
@@ -739,7 +749,11 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param textResources
      * @return
      */
-    private List<Text> getTextList(ProgramDetail.Program prog, Set<AdText> textResources) {
+    private List<Text> getTextList(ProgramDetail.Program prog, int campaignId, DatabaseAdapter databaseAdapter) throws MyCustomException {
+
+        //Set<AdText> textResources = databaseAdapter.fetchResources(EntityName.AD_TEXT, AdText.FETCH_TEXT, "campaignId", campaignId);
+        Set<AdText> textResources = databaseAdapter.fetchResources(EntityName.AD_TEXT, AdText.FETCH_TEXT, "adTextPrograms.campaignId", campaignId);
+
         List<Text> textList = new ArrayList<>();
 
         for (AdText adText : textResources) {
@@ -764,7 +778,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param fileIdsGenerated
      * @return
      */
-    private List<Resources> getResourcesList(ProgramDetail.Program prog, Set<AdResource> adResources, List<String> fileIdsGenerated) {
+    private List<Resources> getResourcesList(ProgramDetail.Program prog, List<String> fileIdsGenerated, int campaignId, DatabaseAdapter databaseAdapter) throws MyCustomException {
+
+        Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RESOURCE, "adResourcePrograms.campaignId", campaignId);
 
         List<Resources> resourcesList = new ArrayList<>();
         int generatedResourceIdCount = 0;
@@ -795,7 +811,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         return resourcesList;
     }
 
-    public void executeOLD(JobExecutionContext jec) throws JobExecutionException {
+    public void executeOLD(JobExecutionContext jec) throws JobExecutionException, MyCustomException {
 
         JobDetail jobDetail = jec.getJobDetail();
         String jobName = jobDetail.getKey().getName();
