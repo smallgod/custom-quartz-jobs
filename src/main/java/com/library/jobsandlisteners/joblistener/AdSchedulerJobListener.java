@@ -6,7 +6,7 @@
 
 package com.library.jobsandlisteners.joblistener;
 
-import com.library.utilities.LoggerUtil;
+import com.library.sglogger.util.LoggerUtil;
 import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
 import org.quartz.JobListener;

@@ -45,7 +45,7 @@ import org.quartz.UnableToInterruptJobException;
 import com.library.sgsharedinterface.RemoteRequest;
 import com.library.utilities.DateUtils;
 import com.library.utilities.FileUtilities;
-import com.library.utilities.LoggerUtil;
+import com.library.sglogger.util.LoggerUtil;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;

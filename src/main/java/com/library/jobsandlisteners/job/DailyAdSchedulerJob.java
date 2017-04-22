@@ -31,7 +31,7 @@ import org.quartz.JobExecutionContext;
 import org.quartz.JobExecutionException;
 import org.quartz.UnableToInterruptJobException;
 import com.library.sgsharedinterface.RemoteRequest;
-import com.library.utilities.LoggerUtil;
+import com.library.sglogger.util.LoggerUtil;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
