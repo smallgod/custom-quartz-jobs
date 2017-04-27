@@ -408,9 +408,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
         List<AdResource> resourecesToUpdateInDB = new ArrayList<>();
 
-        String fileUploadDir = NamedConstants.FILE_UPLOAD_DIR;
+        String fileUploadDir = NamedConstants.FILE_UPLOAD_DIR; //put this guy in the configs, see how to do it
         int iteration = 1;
         Set<Long> ids = new HashSet<>();
+        
         for (AdSetupRequest.ProgramDetail.Program.Resources resource : allUploadableMediaResources) {
 
             logger.debug("Iteration no. " + iteration + ", for resource name: " + resource.getResourceDetail());
@@ -421,20 +422,20 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             if (!isUploadedToDSM) {
 
                 long id = resource.getEntityId();
-                String uploadId = resource.getUploadId();
+                String uploadId = resource.getUploadId(); //this is the ID we assigned while uploading
                 String uploadName = resource.getResourceDetail();
-                long fileId = resource.getResourceId();
+                long fileId = resource.getResourceId(); //this is the ID we created at the DSM in the first call to DSM
 
-                logger.debug("Resource, with name: " + resource.getResourceDetail() + ", file id: " + resource.getResourceId() + ", is not yet uploaded, uploading now!");
-                //update this object
-                String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
-                String newFileName = fileUploadDir + File.separator + fileId;
+                //String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
+                String fileName = fileUploadDir + File.separator + uploadId;
+                //String newFileName = fileUploadDir + File.separator + fileId;
+                
+                
+                
 
                 if (!FileUtilities.existFile(newFileName)) {
 
                     boolean isCopied = FileUtilities.copyFile(fileName, newFileName);
-                    logger.debug("Renaming of file status: " + isCopied);
-
                     if (isCopied) {
 
                         filesToUpload.add(new File(newFileName));
@@ -450,8 +451,11 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
                 adResourceFromDB.setResourceId(fileId);
-                resourecesToUpdateInDB.add(adResourceFromDB);
+                //update resource
                 databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
+                
+                resourecesToUpdateInDB.add(adResourceFromDB);
+                
 
                 ids.add(id);
 
