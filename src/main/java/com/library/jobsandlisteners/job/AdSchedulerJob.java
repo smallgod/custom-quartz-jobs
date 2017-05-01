@@ -17,7 +17,6 @@ import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
 import com.library.datamodel.Constants.ProgDisplayLayout;
-import com.library.datamodel.Constants.ResourceType;
 import com.library.datamodel.Json.GenerateIdRequest;
 import com.library.datamodel.Json.GeneratedIdResponse;
 import com.library.datamodel.Json.AdSetupRequest;
@@ -264,6 +263,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         /////
                         /////
                         /////
+                        //NO NEED TO GENERATE IDS FOR TEXT-ONLY ADS -> REALLY??? I THINK WE NEED IT FOR PROGRAM_IDS
                         GenerateIdRequest generateIdRequest = new GenerateIdRequest();
                         List<GenerateIdRequest.Params> params = new ArrayList<>();
 
@@ -287,6 +287,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
                         String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
 
+                        
                         GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
                         List<GeneratedIdResponse.Response> responseList = genIdResponse.getResponse();
 
@@ -348,7 +349,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                         //add only a single day's TerminalDetail, could add more days but 1 day for now
                         terminalDetailList.add(terminalDetail);
-                    
+
                         //In the interim I think we should fetch all resources and upload to DSM first
                         //We will need to rectify this code as it is tightly coupling the adDisplay unit to AdCentral
                         //since it is fetching resources from a machine path as though they were on the same machine e.g.
@@ -362,8 +363,8 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                             uploadMediaResources(allUploadableMediaResources, databaseAdapter, dsmRemoteUnit);
                         }
-                        
-                         //Send schedule Request to DSM
+
+                        //Send schedule Request to DSM
                         adSetupRequest.setMethodName(APIMethodName.UPLOAD_SCHEDULE_TO_DSM.getValue());
                         adSetupRequest.setProgramDetail(programDetailList);
                         adSetupRequest.setTerminalDetail(terminalDetailList);
@@ -392,26 +393,22 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
     }
 
     /**
-     * 
+     *
      * @param allUploadableMediaResources
      * @param databaseAdapter
      * @param dsmRemoteUnit
-     * @throws MyCustomException 
+     * @throws MyCustomException
      */
     public void uploadMediaResources(List<AdSetupRequest.ProgramDetail.Program.Resources> allUploadableMediaResources, DatabaseAdapter databaseAdapter, RemoteRequest dsmRemoteUnit) throws MyCustomException {
 
         Set<String> columnsToFetch = new HashSet<>();
         columnsToFetch.add("ALL");
 
-        Set<File> oldFiles = new HashSet<>();
-        Set<File> filesToUpload = new HashSet<>();
-
-        List<AdResource> resourecesToUpdateInDB = new ArrayList<>();
-
         String fileUploadDir = NamedConstants.FILE_UPLOAD_DIR; //put this guy in the configs, see how to do it
         int iteration = 1;
-        Set<Long> ids = new HashSet<>();
-        
+        Set<File> filesToUpload = new HashSet<>();
+        List<AdResource> resourcesToUpdateInDB = new ArrayList<>();
+
         for (AdSetupRequest.ProgramDetail.Program.Resources resource : allUploadableMediaResources) {
 
             logger.debug("Iteration no. " + iteration + ", for resource name: " + resource.getResourceDetail());
@@ -422,27 +419,12 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             if (!isUploadedToDSM) {
 
                 long id = resource.getEntityId();
-                String uploadId = resource.getUploadId(); //this is the ID we assigned while uploading
+                String uploadId = resource.getUploadId(); //this is the ID we assigned while uploading with a file extension
                 String uploadName = resource.getResourceDetail();
                 long fileId = resource.getResourceId(); //this is the ID we created at the DSM in the first call to DSM
 
-                //String fileName = fileUploadDir + File.separator + uploadId + "_" + uploadName;
                 String fileName = fileUploadDir + File.separator + uploadId;
-                //String newFileName = fileUploadDir + File.separator + fileId;
-                
-                
-                
-
-                if (!FileUtilities.existFile(newFileName)) {
-
-                    boolean isCopied = FileUtilities.copyFile(fileName, newFileName);
-                    if (isCopied) {
-
-                        filesToUpload.add(new File(newFileName));
-                        oldFiles.add(new File(fileName));
-
-                    }
-                }
+                filesToUpload.add(new File(fileName));
 
                 Map<String, Object> resourceProps = new HashMap<>();
                 resourceProps.put("id", new HashSet<>(Arrays.asList(id)));
@@ -451,13 +433,11 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
                 adResourceFromDB.setResourceId(fileId);
-                //update resource
-                databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
+                h
                 
-                resourecesToUpdateInDB.add(adResourceFromDB);
-                
+                //databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
 
-                ids.add(id);
+                resourcesToUpdateInDB.add(adResourceFromDB);
 
                 iteration++;
             }
@@ -467,22 +447,11 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
             if (isFileUploaded) {
 
-                logger.debug("Going to update resources in DB, no. of resources : " + resourecesToUpdateInDB.size());
-
-                //boolean isUpdated = databaseAdapter.SaveOrUpdateBulk(EntityName.AD_RESOURCE, resourecesToUpdateInDB, Boolean.FALSE);
-                //logger.debug("resources updated: " + isUpdated);
-                //delete the old files from disk
-                for (File file : oldFiles) {
-                    FileUtilities.deleteFile(file);
-                }
-
-            } else {
-
-                //delete the old files from disk
+                //delete files from disk
                 for (File file : filesToUpload) {
                     FileUtilities.deleteFile(file);
                 }
-                logger.warn("Failed to upload files to DSM, deleting the new files that were created on disk AND NOT sending request to DSM");
+
             }
 
         }//end for-loop through resources 
@@ -657,98 +626,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
     /**
      *
-     *
-     * @param adRequest
-     * @return
-     */
-    List<AdSetupRequest.ProgramDetail> createProgramDetailListOLD(AdSetupRequest adRequest) {
-
-        AdSetupRequest.ProgramDetail progDetail = adRequest.new ProgramDetail();
-
-        ProgramDetail.Program prog = progDetail.new Program();
-        prog.setDisplayLayout("3SPLIT");
-        prog.setProgramId(898899);
-        prog.setStatus("NEW");
-
-        DisplayTime displayTime1 = prog.new DisplayTime();
-        displayTime1.setStarttime("21:06:49");
-        displayTime1.setStoptime("21:07:49");
-
-        DisplayTime displayTime2 = prog.new DisplayTime();
-        displayTime2.setStarttime("21:06:49");
-        displayTime2.setStoptime("21:07:49");
-
-        List<DisplayTime> displayTimes = new ArrayList<>();
-        displayTimes.add(displayTime1);
-        displayTimes.add(displayTime2);
-
-        List<Resources> resourcesList = new ArrayList<>();
-
-        Resources resources = prog.new Resources();
-        resources.setResourceDetail("restaurant_front.mp4");
-        resources.setResourceId(480212808L);
-        resources.setResourceType(1); // "VIDEO
-        resources.setStatus("OLD");
-
-        resourcesList.add(resources);
-
-        prog.setResources(resourcesList);
-        prog.setDisplayTimesList(displayTimes);
-
-        List<ProgramDetail.Program> programIds = new ArrayList<>();
-        programIds.add(prog);
-
-        progDetail.setDisplayDate("2017-01-22");
-        progDetail.setProgramIds(programIds);
-
-        List<AdSetupRequest.ProgramDetail> programDetailList = new ArrayList<>();
-        //add only a single day's ProgramDetail
-        programDetailList.add(progDetail);
-
-        return programDetailList;
-    }
-
-    /**
-     *
-     * @param adRequest
-     * @return
-     */
-    List<AdSetupRequest.TerminalDetail> createTerminalDetailListOLD(AdSetupRequest adRequest) {
-
-        AdSetupRequest.TerminalDetail playerDetail = adRequest.new TerminalDetail();
-        playerDetail.setDisplayDate("2017-01-22");
-
-        //program IDs
-        List<Integer> programIdList = new ArrayList<>();
-        programIdList.add(763838330);
-        programIdList.add(543838330);
-        programIdList.add(913838330);
-
-        //Terminals
-        AdSetupRequest.TerminalDetail.Terminal terminal = playerDetail.new Terminal();
-        terminal.setProgramIdList(programIdList);
-        terminal.setTaskIdX(839392829);
-        terminal.setTaskName("First Task");
-        terminal.setTerminalId("99877373738333");
-        terminal.setTerminalHeight(1920);
-        terminal.setTerminalWidth(1080);
-
-        List<AdSetupRequest.TerminalDetail.Terminal> terminalList = new ArrayList<>();
-        //adding only one terminal for now
-        terminalList.add(terminal);
-
-        playerDetail.setTerminals(terminalList);
-
-        List<AdSetupRequest.TerminalDetail> playerDetailList = new ArrayList<>();
-        //add only a single day's terminalDetail
-        playerDetailList.add(playerDetail);
-
-        //adRequest.setPlayerDetail(playerDetailList);
-        return playerDetailList;
-    }
-
-    /**
-     *
      * @param prog
      * @param textResources
      * @return
@@ -784,7 +661,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      */
     private List<Resources> getResourcesList(ProgramDetail.Program prog, List<String> fileIdsGenerated, int campaignId, DatabaseAdapter databaseAdapter) throws MyCustomException {
 
-        Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RESOURCE, "adResourcePrograms.campaignId", campaignId);
+        Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RESOURCE_By_UPLOADID, "adResourcePrograms.campaignId", campaignId);
 
         List<Resources> resourcesList = new ArrayList<>();
         int generatedResourceIdCount = 0;
@@ -800,8 +677,8 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             }
 
             Resources resources = prog.new Resources();
-            resources.setResourceDetail(adResource.getResourceName()); //"restaurant_front.mp4"
-            resources.setResourceId(resourceId); //"5480212808"
+            resources.setResourceDetail(adResource.getResourceName()); 
+            resources.setResourceId(resourceId); 
             resources.setUploadId(adResource.getUploadId());//Id given when uploading to AdCentral, different from the file Id
             resources.setEntityId(adResource.getId());
             resources.setResourceType(adResource.getResourceType().getValue()); //"1" for "VIDEO"
