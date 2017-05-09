@@ -24,6 +24,7 @@ import com.library.datamodel.Json.AdSetupRequest.ProgramDetail;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.DisplayTime;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.Resources;
 import com.library.datamodel.Json.AdSetupRequest.ProgramDetail.Program.Text;
+import com.library.datamodel.Json.FileUploadResponse;
 import com.library.datamodel.model.v1_0.AdProgram;
 import com.library.datamodel.model.v1_0.AdResource;
 import com.library.datamodel.model.v1_0.AdSchedule;
@@ -45,6 +46,7 @@ import com.library.sgsharedinterface.RemoteRequest;
 import com.library.utilities.DateUtils;
 import com.library.utilities.FileUtilities;
 import com.library.sglogger.util.LoggerUtil;
+import com.library.utilities.FileDetails;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -138,14 +140,13 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                                 adSchedule.setFetchStatus(FetchStatus.FETCHED);
                                 schedulesToUpdate.add(adSchedule);
 
-                                //databaseAdapter.saveOrUpdateEntity(adSchedule, Boolean.FALSE);
                             }
 
                             databaseAdapter.SaveOrUpdateBulk(EntityName.AD_SCHEDULE, schedulesToUpdate, Boolean.FALSE);
                         }
 
                     } else {
-                        logger.debug("Lock is held by some other thread, return now!");
+                        logger.debug("SG Lock is held by some other thread, return now!");
                         return;
                     }
 
@@ -287,7 +288,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         String generateIdJsonRequest = GeneralUtils.convertToJson(generateIdRequest, GenerateIdRequest.class);
                         String generateIdJsonResponse = clientPool.sendRemoteRequest(generateIdJsonRequest, dsmRemoteUnit);
 
-                        
                         GeneratedIdResponse genIdResponse = GeneralUtils.convertFromJson(generateIdJsonResponse, GeneratedIdResponse.class);
                         List<GeneratedIdResponse.Response> responseList = genIdResponse.getResponse();
 
@@ -357,7 +357,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         //preview URL for now will be used as the file uploads URL
                         //we are uploading resources here, right before calling Adrequest
                         //upload files to DSM if any
-                        List<AdSetupRequest.ProgramDetail.Program.Resources> allUploadableMediaResources = getAllUploadableMediaResources(programs);
+                        Map<Integer, List<AdSetupRequest.ProgramDetail.Program.Resources>> allUploadableMediaResources = getAllUploadableMediaResources(programs);
 
                         if (!(allUploadableMediaResources == null || allUploadableMediaResources.isEmpty())) {
 
@@ -372,7 +372,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         String jsonReq = GeneralUtils.convertToJson(adSetupRequest, AdSetupRequest.class);
 
                         String response = clientPool.sendRemoteRequest(jsonReq, dsmRemoteUnit);
-
                         logger.debug("Mega wrapper Response: " + response);
 
                     } else {
@@ -393,84 +392,162 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
     }
 
     /**
+     * Update in db uploaded/deleted files
+     *
+     * @param deletedFiles
+     * @param databaseAdapter
+     * @throws MyCustomException
+     */
+    public void updateUploadedFilesHelper(Set<FileDetails> deletedFiles, DatabaseAdapter databaseAdapter) throws MyCustomException {
+
+        for (FileDetails fileDetails : deletedFiles) {
+
+            int campaignId = fileDetails.getCampaignId();
+            String uploadId = fileDetails.getUploadId();
+            long fileId = fileDetails.getFileId();
+
+            Map<String, Object> resourceProps = new HashMap<>();
+            resourceProps.put("uploadId", new HashSet<>(Arrays.asList(uploadId)));
+            resourceProps.put("campaignId", new HashSet<>(Arrays.asList(campaignId)));
+
+            //AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, resourceProps, columnsToFetch);
+            //Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RES_BY_CAMPNID_N_UPLDID, "uploadId", uploadId);
+            Set<AdResource> adResources = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_RESOURCE, AdResource.FETCH_RES_BY_CAMPNID_N_UPLDID, resourceProps);
+
+            if (!(adResources == null || adResources.isEmpty())) {
+
+                AdResource adResourceFromDB = (AdResource) adResources.toArray()[0];
+
+                adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
+                adResourceFromDB.setResourceId(fileId);
+
+                logger.warn("Num of Res for this prog: " + adResourceFromDB.getAdResourcePrograms().size());
+
+                databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
+
+            } else {
+                logger.warn("AdResource with upload id: " + uploadId + ", NOT found in the database");
+            }
+
+        }
+    }
+
+    /**
+     * Delete uploaded files helper
+     *
+     * @param fileUploadResponse
+     * @param filesToUpload
+     * @return
+     */
+    public Set<FileDetails> deleteFilesHelper(FileUploadResponse fileUploadResponse, Map<Long, FileDetails> filesToUpload) {
+
+        Set<FileDetails> deletedFiles = new HashSet<>();
+        if (fileUploadResponse != null) {
+
+            Set<FileUploadResponse.Data> data = fileUploadResponse.getData();
+
+            for (FileUploadResponse.Data item : data) {
+
+                if (item.getIsUploaded()) {
+
+                    if (!(filesToUpload == null || filesToUpload.isEmpty())) {
+
+                        FileDetails fileDetails = filesToUpload.get(item.getFileId());
+                        File fileToDelete = fileDetails.getFile();
+
+                        boolean deleted = FileUtilities.deleteFile(fileToDelete);
+                        if (deleted) {
+                            deletedFiles.add(fileDetails);
+                        }
+                    } else {
+                        logger.info("Files to Upload object is null or empty!");
+                    }
+
+                }
+            }
+        }
+
+        return deletedFiles;
+
+    }
+
+    /**
      *
      * @param allUploadableMediaResources
      * @param databaseAdapter
      * @param dsmRemoteUnit
      * @throws MyCustomException
      */
-    public void uploadMediaResources(List<AdSetupRequest.ProgramDetail.Program.Resources> allUploadableMediaResources, DatabaseAdapter databaseAdapter, RemoteRequest dsmRemoteUnit) throws MyCustomException {
-
-        Set<String> columnsToFetch = new HashSet<>();
-        columnsToFetch.add("ALL");
+    public void uploadMediaResources(Map<Integer, List<AdSetupRequest.ProgramDetail.Program.Resources>> allUploadableMediaResources, DatabaseAdapter databaseAdapter, RemoteRequest dsmRemoteUnit) throws MyCustomException {
 
         String fileUploadDir = NamedConstants.FILE_UPLOAD_DIR; //put this guy in the configs, see how to do it
+        Map<Long, FileDetails> filesToUpload = new HashMap<>();
         int iteration = 1;
-        Set<File> filesToUpload = new HashSet<>();
-        List<AdResource> resourcesToUpdateInDB = new ArrayList<>();
 
-        for (AdSetupRequest.ProgramDetail.Program.Resources resource : allUploadableMediaResources) {
+        for (Map.Entry<Integer, List<AdSetupRequest.ProgramDetail.Program.Resources>> entry : allUploadableMediaResources.entrySet()) {
 
-            logger.debug("Iteration no. " + iteration + ", for resource name: " + resource.getResourceDetail());
-            logger.debug("Iterating no. " + iteration + ", for resource id  : " + resource.getUploadId());
+            int campaignId = entry.getKey();
+            List<AdSetupRequest.ProgramDetail.Program.Resources> resources = entry.getValue();
 
-            boolean isUploadedToDSM = resource.isIsUploadedToDSM();
+            for (AdSetupRequest.ProgramDetail.Program.Resources resource : resources) {
 
-            if (!isUploadedToDSM) {
+                boolean isUploadedToDSM = resource.isIsUploadedToDSM();
 
-                long id = resource.getEntityId();
-                String uploadId = resource.getUploadId(); //this is the ID we assigned while uploading with a file extension
-                String uploadName = resource.getResourceDetail();
-                long fileId = resource.getResourceId(); //this is the ID we created at the DSM in the first call to DSM
+                logger.debug("Iteration no. " + iteration + ", for resource name: " + resource.getResourceDetail());
+                logger.debug("Iterating no. " + iteration + ", for resource id  : " + resource.getUploadId());
+                logger.debug("File is uploaded to DSM: " + isUploadedToDSM);
 
-                String fileName = fileUploadDir + File.separator + uploadId;
-                filesToUpload.add(new File(fileName));
+                if (!isUploadedToDSM) {
 
-                Map<String, Object> resourceProps = new HashMap<>();
-                resourceProps.put("id", new HashSet<>(Arrays.asList(id)));
+                    String uploadName = resource.getResourceDetail();
+                    String uploadId = resource.getUploadId(); //this is the ID we assigned while uploading with a file extension
+                    long fileId = resource.getResourceId(); //this is the ID we created at the DSM in the first call to DSM
+                    String fileName = fileUploadDir + File.separator + uploadId;
 
-                AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, resourceProps, columnsToFetch);
+                    FileDetails fileDetails = new FileDetails();
+                    fileDetails.setCampaignId(campaignId);
+                    fileDetails.setFileId(fileId);
+                    fileDetails.setFileName(uploadName);
+                    fileDetails.setUploadId(uploadId);
+                    fileDetails.setFile(new File(fileName));
 
-                adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
-                adResourceFromDB.setResourceId(fileId);
-                h
-                
-                //databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
+                    filesToUpload.put(fileId, fileDetails);
 
-                resourcesToUpdateInDB.add(adResourceFromDB);
-
-                iteration++;
-            }
-
-            boolean isFileUploaded = MultipartFileUploader.uploadFiles(filesToUpload, dsmRemoteUnit.getPreviewUrl());
-            logger.debug("Are files uploaded to DSM server: " + isFileUploaded);
-
-            if (isFileUploaded) {
-
-                //delete files from disk
-                for (File file : filesToUpload) {
-                    FileUtilities.deleteFile(file);
                 }
-
             }
 
-        }//end for-loop through resources 
+            //upload files
+            FileUploadResponse fileUploadResponse = MultipartFileUploader.uploadFiles(filesToUpload, dsmRemoteUnit.getPreviewUrl());
+            logger.debug("Upload Response: " + GeneralUtils.convertToJson(fileUploadResponse, FileUploadResponse.class));
+            
+            //delete uploaded files
+            Set<FileDetails> deletedFiles = deleteFilesHelper(fileUploadResponse, filesToUpload);
+
+            //update uploaded/deleted files
+            updateUploadedFilesHelper(deletedFiles, databaseAdapter);
+
+            iteration++;
+
+        }//end for-loop through map of resources & campaignIds 
     }
 
     /**
-     * Get all uploadable media resources from all the programs
+     * Get all uploadable media resources from each of the programs
      *
      * @param programs
-     * @return
+     * @return a map of campaignIds & related resources list
      */
-    List<AdSetupRequest.ProgramDetail.Program.Resources> getAllUploadableMediaResources(List<ProgramDetail.Program> programs) {
+    Map<Integer, List<AdSetupRequest.ProgramDetail.Program.Resources>> getAllUploadableMediaResources(List<ProgramDetail.Program> programs) {
 
-        List<AdSetupRequest.ProgramDetail.Program.Resources> allUploadableMediaResources = new ArrayList<>();
+        Map<Integer, List<AdSetupRequest.ProgramDetail.Program.Resources>> allUploadableMediaResources = new HashMap<>();
 
         for (ProgramDetail.Program eachProgram : programs) {
 
             List<AdSetupRequest.ProgramDetail.Program.Resources> programResources = eachProgram.getResources();
-            allUploadableMediaResources.addAll(programResources);
+            int campaingId = eachProgram.getCampaignId();
+
+            //create map of campaign Id and resources, we might want to add campaign_id on the adRequest
+            allUploadableMediaResources.put(campaingId, programResources);
 
         }
 
@@ -496,7 +573,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             prog = progDetail.new Program();
 
             long adLength = adProgram.getAdLength();
-            //long id = adProgram.getId();
             int campaignId = adProgram.getCampaignId();
             ProgDisplayLayout displayLayout = adProgram.getDisplayLayout();
 
@@ -572,6 +648,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             prog.setDisplayLayout(displayLayout.getValue());
             prog.setEntityId(progEntityId);
             prog.setProgramId(advertProgId);
+            prog.setCampaignId(campaignId);
             prog.setStatus("NEW"); //To-Do check if program is already uploaded to DSM and send "NEW" otherwise sending something else..
 
             prog.setResources(resourcesList);
@@ -661,8 +738,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      */
     private List<Resources> getResourcesList(ProgramDetail.Program prog, List<String> fileIdsGenerated, int campaignId, DatabaseAdapter databaseAdapter) throws MyCustomException {
 
-        Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RESOURCE_By_UPLOADID, "adResourcePrograms.campaignId", campaignId);
+        Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RESOURCE_BY_CAMPAIGNID, "adResourcePrograms.campaignId", campaignId);
 
+        logger.debug("Size of resources for campaignId: " + campaignId + ", is: " + adResources.size());
+        
         List<Resources> resourcesList = new ArrayList<>();
         int generatedResourceIdCount = 0;
 
@@ -677,8 +756,8 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             }
 
             Resources resources = prog.new Resources();
-            resources.setResourceDetail(adResource.getResourceName()); 
-            resources.setResourceId(resourceId); 
+            resources.setResourceDetail(adResource.getResourceName());
+            resources.setResourceId(resourceId);
             resources.setUploadId(adResource.getUploadId());//Id given when uploading to AdCentral, different from the file Id
             resources.setEntityId(adResource.getId());
             resources.setResourceType(adResource.getResourceType().getValue()); //"1" for "VIDEO"

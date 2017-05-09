@@ -59,23 +59,12 @@
     
     <dependencies>
         
-        <!--<dependency>
-            <groupId>joda-time</groupId>
-            <artifactId>joda-time</artifactId>
-            <version>2.4</version>
-        </dependency>
         <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-server</artifactId>
-            <version>9.2.14.v20151106</version>
+            <groupId>com.sgdbadapter</groupId>
+            <artifactId>sgdbadapter</artifactId>
+            <version>1.0</version>
             <type>jar</type>
         </dependency>
-        <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-plus</artifactId>
-            <version>9.2.3.v20140905</version>
-            <type>jar</type>
-        </dependency>-->
         
    
         <dependency>
@@ -86,12 +75,6 @@
         </dependency>
     
         
-        <dependency>
-            <groupId>com.sgdbadapter</groupId>
-            <artifactId>sgdbadapter</artifactId>
-            <version>1.0</version>
-            <type>jar</type>
-        </dependency>
         
         <dependency>
             <groupId>com.sghttpconnectionmanager</groupId>
