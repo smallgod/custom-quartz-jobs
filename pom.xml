@@ -60,6 +60,13 @@
     <dependencies>
         
         <dependency>
+            <groupId>com.sgmtnmoney-ug</groupId>
+            <artifactId>sgmtnmoney-ug</artifactId>
+            <version>1.0</version>
+            <type>jar</type>
+        </dependency>
+        
+        <dependency>
             <groupId>com.sgdbadapter</groupId>
             <artifactId>sgdbadapter</artifactId>
             <version>1.0</version>
