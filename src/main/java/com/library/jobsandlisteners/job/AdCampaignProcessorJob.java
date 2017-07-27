@@ -352,45 +352,6 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
     }
 
-    public void executeOLD(JobExecutionContext jec) throws JobExecutionException, MyCustomException {
-
-        JobDetail jobDetail = jec.getJobDetail();
-        String jobName = jobDetail.getKey().getName();
-
-        JobDataMap jobsDataMap = jec.getMergedJobDataMap();
-
-        JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
-
-        RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
-        RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
-        HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
-        DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
-
-        //logger.debug("size of jobMap: " + jobMap.size());
-        /*logger.debug("sleeping for 30s at: " + new DateTime().getSecondOfDay());
-         try {
-         logger.debug("mimick job execution.....");
-         Thread.sleep(30000L);
-         } catch (InterruptedException ex) {logger.debug("error trying to sleep: " + ex.getMessage());
-         }
-         logger.debug("done sleeping for 30s at: " + new DateTime().getSecondOfDay());
-         */
-        AdFetchRequest request = new AdFetchRequest();
-        request.setMethodName("ADFETCH_REQUEST");
-        AdFetchRequest.Params params = request.new Params();
-        params.setStatus(ProcessingUnitState.POLL.getValue()); //need Enum
-        request.setParams(params);
-
-        String jsonRequest = GeneralUtils.convertToJson(request, AdFetchRequest.class);
-
-        logger.debug("New AdFetch Request: " + jsonRequest);
-
-        String response = clientPool.sendRemoteRequest(jsonRequest, dsmRemoteUnit);
-
-        logger.info("Response from Central Server: " + response);
-
-    }
-
     @Override
     public void interrupt() throws UnableToInterruptJobException {
         logger.warn("Failed to interrupt a Job before deleting it..");

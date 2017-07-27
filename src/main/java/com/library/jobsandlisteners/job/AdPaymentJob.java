@@ -12,6 +12,7 @@ import com.library.datamodel.Constants.CampaignStatus;
 import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.NamedConstants;
 import com.library.datamodel.Constants.TransactionAggregatorStatus;
+import com.library.datamodel.Json.DBSaveResponse;
 import com.library.datamodel.model.v1_0.AdPaymentDetails;
 import com.library.datamodel.model.v1_0.AdProgram;
 import com.library.datamodel.model.v1_0.MamboPayPaymentResponse;
@@ -60,11 +61,6 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
 
                 DebitClient debitAccount = new DebitClient(clientPool);
 
-                Set<String> columnsToFetch = new HashSet<>();
-                columnsToFetch.add("ALL");
-
-                Set<AdPaymentDetails> updatedPayments = new HashSet<>();
-
                 try {
 
                     if (NamedConstants.FETCH_PAYMENTS_LOCK.tryLock(30, TimeUnit.SECONDS)) {
@@ -79,7 +75,7 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                         if (triggerNow) {
 
                             AdPaymentDetails paymentDetails = (AdPaymentDetails) jobsDataMap.get(NamedConstants.PAYMENTS_DATA);
-                            makePayment(debitAccount, paymentDetails);
+                            makePayment(debitAccount, paymentDetails, databaseAdapter);
                             logger.debug("Releasing lock!");
                             NamedConstants.FETCH_PAYMENTS_LOCK.unlock();
                             return;
@@ -105,14 +101,9 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                         } else {
 
                             for (AdPaymentDetails newPayment : newPayments) {
-                                //dont fetch it again
-                                newPayment.setPaymentStatus(AdPaymentStatus.PAY_INITIATED);
-                                updatedPayments.add(newPayment);
-
-                                //we might need to move the lower for loop here
-                                //2. Alert campaignProcessor to move to next step
+                                makePayment(debitAccount, newPayment, databaseAdapter);
                             }
-                            databaseAdapter.SaveOrUpdateBulk(EntityName.AD_PAYMENT, updatedPayments, Boolean.FALSE);
+                            //databaseAdapter.SaveOrUpdateBulk(EntityName.AD_PAYMENT, updatedPayments, Boolean.FALSE);
                         }
 
                     } else {
@@ -131,14 +122,6 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                     NamedConstants.FETCH_PAYMENTS_LOCK.unlock();
                 }
 
-                //Set<AdPaymentDetails> paymentsToUpdate = new HashSet<>();
-                Set<AdProgram> programsToUpdate = new HashSet<>();
-
-                for (AdPaymentDetails payment : updatedPayments) {
-
-                    makePayment(debitAccount, payment);
-                }
-
             } catch (MyCustomException ex) {
                 Exceptions.printStackTrace(ex);
             } catch (Exception ex) {
@@ -150,8 +133,18 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
 
     }
 
-    void makePayment(DebitClient debitAccount, AdPaymentDetails payment) throws MyCustomException {
+    /**
+     * Make a payment and update the status in the DB
+     *
+     * @param debitAccount
+     * @param payment
+     * @param databaseAdapter
+     * @return
+     * @throws MyCustomException
+     */
+    boolean makePayment(DebitClient debitAccount, AdPaymentDetails payment, DatabaseAdapter databaseAdapter) throws MyCustomException {
 
+        boolean isUpdated = Boolean.FALSE;
         MoMoPaymentMamboPay request = new MoMoPaymentMamboPay();
         request.setAccountToDebit(request.new AccountToDebit(NamedConstants.MAMBOPAY_PARAM_MSISDN, payment.getPayerAccount()));
         request.setAmountToDebit(request.new AmountToDebit(NamedConstants.MAMBOPAY_PARAM_AMOUNT, payment.getAmount()));
@@ -165,25 +158,16 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
             TransactionAggregatorStatus status = TransactionAggregatorStatus.convertToEnum(response.getStatus());
             String message = response.getStatusDescription();
 
-            Map<String, Object> resourceProps = new HashMap<>();
-            resourceProps.put("internalPaymentID", new HashSet<>(Arrays.asList(payment.getInternalPaymentID())));
-
-            Set<AdProgram> adPrograms = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_PROGRAM, AdProgram.FETCH_CAMPAIGNS_BY_PAYMENT_ID, resourceProps);
-            AdProgram adProgram = (AdProgram) adPrograms.toArray()[0];
-
             switch (status) {
 
                 case PROCESSING:
                     //already marked INITIATED;
-                    adProgram.setAdCampaignStatus(CampaignStatus.PENDING_PAYMENT);
-                    adProgram.setDescription("Payment initiated: " + message);
+                    payment.setPaymentStatus(AdPaymentStatus.PAY_INITIATED);
 
                     break;
 
                 case FAILED:
                     payment.setPaymentStatus(AdPaymentStatus.PAY_FAILED);
-                    //adProgram.setAdCampaignStatus(CampaignStatus.REJECTED);
-                    adProgram.setDescription(message);
                     logger.warn(message);
                     break;
 
@@ -207,12 +191,12 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
             payment.setAggregatorPaymentID(reference);
             payment.setStatusDescription(message);
 
-            adProgram.setAdPaymentDetails(payment);
-            programsToUpdate.add(adProgram);
-            //cascade update
-            databaseAdapter.SaveOrUpdateBulk(EntityName.AD_PROGRAM, programsToUpdate, Boolean.FALSE);
-
+            DBSaveResponse dbResonse = databaseAdapter.saveOrUpdateEntity(payment, Boolean.FALSE);
+            if (null != dbResonse) {
+                isUpdated = dbResonse.getSuccess();
+            }
         }
+        return isUpdated;
     }
 
     @Override
