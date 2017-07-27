@@ -19,6 +19,8 @@ import com.library.datamodel.Json.DBSaveResponse;
 import com.library.datamodel.model.v1_0.AdPaymentDetails;
 import com.library.datamodel.model.v1_0.AdProgram;
 import com.library.dbadapter.DatabaseAdapter;
+import com.library.scheduler.CustomJobScheduler;
+import com.library.scheduler.CustomSharedScheduler;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
@@ -40,6 +42,7 @@ import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.joda.time.LocalDateTime;
 import org.openide.util.Exceptions;
+import org.quartz.Scheduler;
 
 /**
  * The class doing the work
@@ -75,7 +78,6 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
      */
     private static final LoggerUtil logger = new LoggerUtil(AdCampaignProcessorJob.class);
 
-    
     @Override
     public void execute(JobExecutionContext jec) throws JobExecutionException {
 
@@ -88,16 +90,17 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
                 //assume we are generating 2 file ids only
                 //we should also send ids we think exist to the dsm bridge service to confirm for us, so that if they don't exist, new ids are generated
-                JobDetail jobDetail = jec.getJobDetail();
-                String jobName = jobDetail.getKey().getName();
+                JobDetail thisJobDetail = jec.getJobDetail();
+                String thisJobName = thisJobDetail.getKey().getName();
 
                 JobDataMap jobsDataMap = jec.getMergedJobDataMap();
 
-                JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
+                JobsConfig thisJobsData = (JobsConfig) jobsDataMap.get(thisJobName);
+                JobsConfig secondJobsData = (JobsConfig) jobsDataMap.get(NamedConstants.SECOND_JOBSDATA);
 
-                RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
-                RemoteRequest centralUnit = jobsData.getRemoteUnitConfig().getAdCentralRemoteUnit();
-                RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
+                RemoteRequest dbManagerUnit = thisJobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
+                RemoteRequest centralUnit = thisJobsData.getRemoteUnitConfig().getAdCentralRemoteUnit();
+                RemoteRequest dsmRemoteUnit = thisJobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
                 HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
                 DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
 
@@ -171,33 +174,18 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
                                             incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
                                             //alert paymentJob
-                                            
-                                            
-                                            
-                                            
-                                            //check if Job is already paused
-                                            String jobTriggerName = adFetchConfig.getJobTriggerName();
-                                            String jobName = adFetchConfig.getJobName();
-                                            String groupName = adFetchConfig.getJobGroupName();
 
-                                            String unitState;
-                                            boolean triggerPaused = SchedudlerUtils.isJobTriggerPaused(jobTriggerName);
-                                            if (triggerPaused) {
-                                                unitState = ProcessingUnitState.BUSY.getValue();
-                                            } else {
-                                                unitState = ProcessingUnitState.HONOURED.getValue();
+                                            jobsDataMap.put(NamedConstants.TRIGGER_NOW, Boolean.TRUE);
+                                            jobsDataMap.put(NamedConstants.PAYMENTS_DATA, paymentDetails);
 
-                                                //start a thread to fetch ads here - pause job and reschedule after
-                                                if (ScheddulerUtils.pauseAJob(jobName, groupName)) {
+                                            String paymentJobTriggerName = secondJobsData.getJobTriggerName();
+                                            String paymentJobName = secondJobsData.getJobName();
+                                            String paymentGroupName = secondJobsData.getJobGroupName();
 
-                                                } else {
+                                            CustomJobScheduler jobScheduler = new CustomJobScheduler(clientPool);
 
-                                                }
-                                            }
-                                            
-                                            
-                                            
-                                            
+                                            jobScheduler.triggerJobNow(paymentJobName, paymentGroupName, jobsDataMap);
+
                                         }
                                         break;
 
@@ -363,8 +351,6 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
         return response.getSuccess();
 
     }
-
-    
 
     public void executeOLD(JobExecutionContext jec) throws JobExecutionException, MyCustomException {
 

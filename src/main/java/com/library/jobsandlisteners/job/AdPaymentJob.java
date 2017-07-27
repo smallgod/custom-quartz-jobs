@@ -58,6 +58,8 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                 HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
                 DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
 
+                DebitClient debitAccount = new DebitClient(clientPool);
+
                 Set<String> columnsToFetch = new HashSet<>();
                 columnsToFetch.add("ALL");
 
@@ -66,6 +68,23 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                 try {
 
                     if (NamedConstants.FETCH_PAYMENTS_LOCK.tryLock(30, TimeUnit.SECONDS)) {
+
+                        Boolean triggerNow = Boolean.FALSE;
+                        Object triggerNowObj = jobsDataMap.get(NamedConstants.TRIGGER_NOW);
+                        if (null != triggerNowObj) {
+                            triggerNow = (Boolean) triggerNowObj;
+                        }
+
+                        //react to trigger-now requests
+                        if (triggerNow) {
+
+                            AdPaymentDetails paymentDetails = (AdPaymentDetails) jobsDataMap.get(NamedConstants.PAYMENTS_DATA);
+                            makePayment(debitAccount, paymentDetails);
+                            logger.debug("Releasing lock!");
+                            NamedConstants.FETCH_PAYMENTS_LOCK.unlock();
+                            return;
+
+                        }
 
                         logger.debug("Thread, " + Thread.currentThread().getName() + ", Inside pending payments lock, about to fetch!");
 
@@ -92,7 +111,6 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
 
                                 //we might need to move the lower for loop here
                                 //2. Alert campaignProcessor to move to next step
-        
                             }
                             databaseAdapter.SaveOrUpdateBulk(EntityName.AD_PAYMENT, updatedPayments, Boolean.FALSE);
                         }
@@ -113,73 +131,12 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                     NamedConstants.FETCH_PAYMENTS_LOCK.unlock();
                 }
 
-                DebitClient debitAccount = new DebitClient(clientPool);
                 //Set<AdPaymentDetails> paymentsToUpdate = new HashSet<>();
                 Set<AdProgram> programsToUpdate = new HashSet<>();
 
                 for (AdPaymentDetails payment : updatedPayments) {
 
-                    MoMoPaymentMamboPay request = new MoMoPaymentMamboPay();
-                    request.setAccountToDebit(request.new AccountToDebit(NamedConstants.MAMBOPAY_PARAM_MSISDN, payment.getPayerAccount()));
-                    request.setAmountToDebit(request.new AmountToDebit(NamedConstants.MAMBOPAY_PARAM_AMOUNT, payment.getAmount()));
-                    request.setTransactionId(request.new TransactionId(NamedConstants.MAMBOPAY_PARAM_TRANSID, payment.getInternalPaymentID()));
-
-                    MamboPayPaymentResponse response = debitAccount.debitClientViaMamboPay(request, NamedConstants.MAMBOPAY_PARAM_CALLBACKURL, NamedConstants.ADVERTXPO_CALLBACK_URL, NamedConstants.MAMBOPAY_DEBIT_URL, NamedConstants.MAMBOPAY_HEADER_SUBSCKEY, NamedConstants.SUBSCRIPTION_KEY);
-
-                    if (response != null) {
-
-                        String reference = response.getMamboPayReference();
-                        TransactionAggregatorStatus status = TransactionAggregatorStatus.convertToEnum(response.getStatus());
-                        String message = response.getStatusDescription();
-
-                        Map<String, Object> resourceProps = new HashMap<>();
-                        resourceProps.put("internalPaymentID", new HashSet<>(Arrays.asList(payment.getInternalPaymentID())));
-
-                        Set<AdProgram> adPrograms = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_PROGRAM, AdProgram.FETCH_CAMPAIGNS_BY_PAYMENT_ID, resourceProps);
-                        AdProgram adProgram = (AdProgram) adPrograms.toArray()[0];
-
-                        switch (status) {
-
-                            case PROCESSING:
-                                //already marked INITIATED;
-                                adProgram.setAdCampaignStatus(CampaignStatus.PENDING_PAYMENT);
-                                adProgram.setDescription("Payment initiated: " + message);
-
-                                break;
-
-                            case FAILED:
-                                payment.setPaymentStatus(AdPaymentStatus.PAY_FAILED);
-                                adProgram.setAdCampaignStatus(CampaignStatus.REJECTED);
-                                adProgram.setDescription(message);
-                                logger.warn(message);
-                                break;
-
-                            case DUPLICATE:
-                                //pass
-                                logger.debug("Duplicate Payment to Aggregator, ignoring aggregator response: " + message);
-                                break;
-
-                            case UNKNOWN:
-                                //figure out what to do with unknown
-                                logger.warn("Aggregator Payment status unknown: " + message);
-                                break;
-
-                            default:
-                                //unknown
-                                logger.warn("Default Payment status from aggregator: " + message);
-                                break;
-                        }
-
-                        //we could just wait for all payments/progs and update at once outside of Loop
-                        payment.setAggregatorPaymentID(reference);
-                        payment.setStatusDescription(message);
-
-                        adProgram.setAdPaymentDetails(payment);
-                        programsToUpdate.add(adProgram);
-                        //cascade update
-                        databaseAdapter.SaveOrUpdateBulk(EntityName.AD_PROGRAM, programsToUpdate, Boolean.FALSE);
-
-                    }
+                    makePayment(debitAccount, payment);
                 }
 
             } catch (MyCustomException ex) {
@@ -191,6 +148,71 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
 
         }
 
+    }
+
+    void makePayment(DebitClient debitAccount, AdPaymentDetails payment) throws MyCustomException {
+
+        MoMoPaymentMamboPay request = new MoMoPaymentMamboPay();
+        request.setAccountToDebit(request.new AccountToDebit(NamedConstants.MAMBOPAY_PARAM_MSISDN, payment.getPayerAccount()));
+        request.setAmountToDebit(request.new AmountToDebit(NamedConstants.MAMBOPAY_PARAM_AMOUNT, payment.getAmount()));
+        request.setTransactionId(request.new TransactionId(NamedConstants.MAMBOPAY_PARAM_TRANSID, payment.getInternalPaymentID()));
+
+        MamboPayPaymentResponse response = debitAccount.debitClientViaMamboPay(request, NamedConstants.MAMBOPAY_PARAM_CALLBACKURL, NamedConstants.ADVERTXPO_CALLBACK_URL, NamedConstants.MAMBOPAY_DEBIT_URL, NamedConstants.MAMBOPAY_HEADER_SUBSCKEY, NamedConstants.SUBSCRIPTION_KEY);
+
+        if (response != null) {
+
+            String reference = response.getMamboPayReference();
+            TransactionAggregatorStatus status = TransactionAggregatorStatus.convertToEnum(response.getStatus());
+            String message = response.getStatusDescription();
+
+            Map<String, Object> resourceProps = new HashMap<>();
+            resourceProps.put("internalPaymentID", new HashSet<>(Arrays.asList(payment.getInternalPaymentID())));
+
+            Set<AdProgram> adPrograms = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_PROGRAM, AdProgram.FETCH_CAMPAIGNS_BY_PAYMENT_ID, resourceProps);
+            AdProgram adProgram = (AdProgram) adPrograms.toArray()[0];
+
+            switch (status) {
+
+                case PROCESSING:
+                    //already marked INITIATED;
+                    adProgram.setAdCampaignStatus(CampaignStatus.PENDING_PAYMENT);
+                    adProgram.setDescription("Payment initiated: " + message);
+
+                    break;
+
+                case FAILED:
+                    payment.setPaymentStatus(AdPaymentStatus.PAY_FAILED);
+                    //adProgram.setAdCampaignStatus(CampaignStatus.REJECTED);
+                    adProgram.setDescription(message);
+                    logger.warn(message);
+                    break;
+
+                case DUPLICATE:
+                    //pass
+                    logger.debug("Duplicate Payment to Aggregator, ignoring aggregator response: " + message);
+                    break;
+
+                case UNKNOWN:
+                    //figure out what to do with unknown
+                    logger.warn("Aggregator Payment status unknown: " + message);
+                    break;
+
+                default:
+                    //unknown
+                    logger.warn("Default Payment status from aggregator: " + message);
+                    break;
+            }
+
+            //we could just wait for all payments/progs and update at once outside of Loop
+            payment.setAggregatorPaymentID(reference);
+            payment.setStatusDescription(message);
+
+            adProgram.setAdPaymentDetails(payment);
+            programsToUpdate.add(adProgram);
+            //cascade update
+            databaseAdapter.SaveOrUpdateBulk(EntityName.AD_PROGRAM, programsToUpdate, Boolean.FALSE);
+
+        }
     }
 
     @Override
