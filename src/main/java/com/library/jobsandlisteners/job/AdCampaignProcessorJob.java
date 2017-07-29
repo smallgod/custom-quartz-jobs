@@ -1,9 +1,3 @@
-
-/*
- * To change this license header, choose License Headers in Project Properties.
- * To change this template file, choose Tools | Templates
- * and open the template in the editor.
- */
 package com.library.jobsandlisteners.job;
 
 import com.library.httpconnmanager.HttpClientPool;
@@ -82,7 +76,6 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 String thisJobName = thisJobDetail.getKey().getName();
 
                 JobDataMap jobsDataMap = jec.getMergedJobDataMap();
-
                 JobsConfig thisJobsData = (JobsConfig) jobsDataMap.get(thisJobName);
                 JobsConfig secondJobsData = (JobsConfig) jobsDataMap.get(NamedConstants.SECOND_JOBSDATA);
 
@@ -90,162 +83,38 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
                 DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
 
-                Map<String, Object> resourceProps = new HashMap<>();
-                resourceProps.put("campaignStatuses", new HashSet<>(Arrays.asList(CampaignStatus.NEW, CampaignStatus.PENDING_PAYMENT, CampaignStatus.PROCESSING, CampaignStatus.IN_REVIEW)));
+                Boolean triggerNow = Boolean.FALSE;
+                Object triggerNowObj = jobsDataMap.get(NamedConstants.TRIGGER_NOW_CAMPAIGNPROCESSOR);
 
-                Set<AdProgram> campaignPrograms = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_PROGRAM, AdProgram.FETCH_CAMPAIGNS_BY_STATUS, resourceProps);
+                if (null != triggerNowObj) {
+                    triggerNow = (Boolean) triggerNowObj;
+                }
 
-                if (!(null == campaignPrograms || campaignPrograms.isEmpty())) {
+                //TriggerNow request from central-unit processor
+                if (triggerNow) {
 
-                    int newCampaignsCounter = 0;
+                    logger.debug("CAMPAIGN_PROCESS TRIGGER_NOW called!!");
 
-                    for (AdProgram program : campaignPrograms) {
-
-                        boolean isProgramReviewed = program.isIsReviewed();
-                        boolean isProgramToBeReviewd = program.isIsToBeReviewed();
-                        int id = (int) program.getId();
-                        int sameStatusPick = program.getSameStatusPick();
-                        CampaignStatus status = program.getAdCampaignStatus();
-
-                        AdPaymentDetails paymentDetails = program.getAdPaymentDetails();
-                        AdPaymentStatus paymentStatus = paymentDetails.getPaymentStatus();
-                        int campaignCost = paymentDetails.getAmount().getAmount();
-                        String currency = paymentDetails.getAmount().getCurrencycode();
-                        String createTime = DateUtils.convertLocalDateTimeToString(program.getCreatedOn(), NamedConstants.DATE_TIME_DASH_FORMAT);
-                        String payerAccount = paymentDetails.getPayerAccount();
-                        LocalDateTime timeOfLastStatusChange = program.getStatusChangeTime();
-
-                        switch (status) {
-
-                            case NEW: //move to PENDING_PAYMENT
-
-                                //send one sms with all new campaigns or send an sms for each new campaign??
-                                logger.warn("A new payment has been logged at: " + DateUtils.convertLocalDateTimeToString(program.getStatusChangeTime(), NamedConstants.DATE_TIME_DASH_FORMAT));
-                                SMSSenderUtils.generateAndSendNewCampaignMsg(createTime, campaignCost, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
-                                moveCampaignToNextStep(program, CampaignStatus.PENDING_PAYMENT, databaseAdapter);
-                                newCampaignsCounter++;
-                                break;
-
-                            case PENDING_PAYMENT: //a txn PENDING_PAYMENT needs to sent for payment before being moved to PROCESSING
-
-                                if (sameStatusPick > 0) {
-                                    //check how long it's been pending_pending & see what todo
-                                    logger.warn("Payment is still pending payment");
-                                }
-
-                                if (paymentStatus == AdPaymentStatus.PAY_INITIATED) {
-                                    moveCampaignToNextStep(program, CampaignStatus.PROCESSING, databaseAdapter);
-
-                                } else {
-
-                                    incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
-
-                                    jobsDataMap.put(NamedConstants.TRIGGER_NOW, Boolean.TRUE);
-                                    jobsDataMap.put(NamedConstants.PAYMENTS_DATA, paymentDetails);
-
-                                    String paymentJobName = secondJobsData.getJobName();
-                                    String paymentGroupName = secondJobsData.getJobGroupName();
-
-                                    CustomJobScheduler jobScheduler = new CustomJobScheduler(clientPool);
-
-                                    jobScheduler.triggerJobNow(paymentJobName, paymentGroupName, jobsDataMap);
-
-                                }
-                                break;
-
-                            case PROCESSING:
-
-                                if (sameStatusPick > 0) {
-                                    //check how long it's been pending_pending & see what todo
-                                    //timeOfLastStatusChange
-                                    logger.warn("Payment is still pending payment");
-                                }
-
-                                if (null != paymentStatus) {
-                                    //1. optimise ad images/videos
-                                    switch (paymentStatus) {
-
-                                        case PAID:
-
-                                            moveCampaignToNextStep(program, CampaignStatus.IN_REVIEW, databaseAdapter);
-                                            break;
-
-                                        case PAY_FAILED:
-
-                                            program.setDescription("Campaign rejected because required payment of: " + currency + " " + campaignCost + " was not made");
-                                            moveCampaignToNextStep(program, CampaignStatus.REJECTED, databaseAdapter);
-                                            break;
-
-                                        case PAY_REVERSED:
-
-                                            program.setDescription("Campaign rejected because required payment of: " + currency + " " + campaignCost + " was reversed");
-                                            moveCampaignToNextStep(program, CampaignStatus.REJECTED, databaseAdapter);
-                                            break;
-
-                                        case PAY_INITIATED:
-
-                                            logger.warn("Payment is still in initiated state/not completed");
-                                            incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
-                                            break;
-
-                                        case STATUS_UNKNOWN:
-
-                                            SMSSenderUtils.generateAndSendCampaignEscalateMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
-                                            program.setDescription("Campaign escalated for manual intervention due to the payment status not being readily available");
-                                            moveCampaignToNextStep(program, CampaignStatus.ESCALATED, databaseAdapter);
-                                            break;
-
-                                        default:
-                                            incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
-                                            break;
-                                    }
-                                }
-                                break;
-
-                            case IN_REVIEW:
-
-                                if (sameStatusPick > 0) {
-                                    logger.warn("Payment is still pending payment");
-                                }
-
-                                if (isProgramReviewed || !isProgramToBeReviewd) {
-                                    moveCampaignToNextStep(program, CampaignStatus.ACTIVE, databaseAdapter);
-
-                                } else {
-                                    SMSSenderUtils.generateAndSendCampaignReviewAdminMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
-                                    incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
-
-                                }
-                                break;
-
-                            case ACTIVE:
-                                break;
-
-                            case COMPLETED:
-                                break;
-
-                            case FLAGGED:
-                                break;
-
-                            case REJECTED:
-                                break;
-
-                            case DRAFT:
-                                break;
-
-                            case REVERSED:
-                                break;
-
-                            case ESCALATED:
-                                break;
-
-                            default:
-                                break;
-                        }
-                    }
+                    AdProgram program = (AdProgram) jobsDataMap.get(NamedConstants.CAMPAIGN_DETAILS);
+                    processAdCampaign(program, thisJobsData, secondJobsData, clientPool, databaseAdapter);
 
                 } else {
-                    logger.debug("No new Campaigns found!");
+
+                    Map<String, Object> resourceProps = new HashMap<>();
+                    resourceProps.put("campaignStatuses", new HashSet<>(Arrays.asList(CampaignStatus.NEW, CampaignStatus.PENDING_PAYMENT, CampaignStatus.PROCESSING, CampaignStatus.IN_REVIEW)));
+
+                    Set<AdProgram> campaignPrograms = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_PROGRAM, AdProgram.FETCH_CAMPAIGNS_BY_STATUS, resourceProps);
+
+                    if (!(null == campaignPrograms || campaignPrograms.isEmpty())) {
+
+                        for (AdProgram program : campaignPrograms) {
+                            processAdCampaign(program, thisJobsData, secondJobsData, clientPool, databaseAdapter);
+                        }
+
+                    } else {
+                        logger.debug("No new Campaigns found!");
+                    }
+
                 }
 
             } else {
@@ -274,6 +143,181 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
         }
 
         //}
+    }
+
+    /**
+     * Trigger the campaign processor to execute now
+     *
+     * @param paymentDetails
+     * @param campaignProcessorJobsData
+     * @param paymentProcessorJobsData
+     * @param clientPool
+     * @return
+     * @throws MyCustomException
+     */
+    public boolean triggerPaymentProcessor(AdPaymentDetails paymentDetails, JobsConfig campaignProcessorJobsData, JobsConfig paymentProcessorJobsData, HttpClientPool clientPool) throws MyCustomException {
+
+        CustomJobScheduler jobScheduler = new CustomJobScheduler(clientPool);
+
+        JobDataMap jobsDataMap = jobScheduler.createJobDataMap(campaignProcessorJobsData, paymentProcessorJobsData);
+        jobsDataMap.put(NamedConstants.TRIGGER_NOW_PAYPROCESSOR, Boolean.TRUE);
+        jobsDataMap.put(NamedConstants.PAYMENTS_DETAILS, paymentDetails);
+
+        String paymentJobName = paymentProcessorJobsData.getJobName();
+        String paymentGroupName = paymentProcessorJobsData.getJobGroupName();
+
+        jobScheduler.triggerJobNow(paymentJobName, paymentGroupName, jobsDataMap);
+
+        boolean isTriggered = jobScheduler.triggerJobNow(paymentJobName, paymentGroupName, jobsDataMap);
+
+        return isTriggered;
+
+    }
+
+    /**
+     *
+     * @param program
+     * @param campaignProcessorJobsData
+     * @param paymentProcessorJobsData
+     * @param clientPool
+     * @param databaseAdapter
+     * @throws MyCustomException
+     */
+    private void processAdCampaign(AdProgram program, JobsConfig campaignProcessorJobsData, JobsConfig paymentProcessorJobsData, HttpClientPool clientPool, DatabaseAdapter databaseAdapter) throws MyCustomException {
+
+        boolean isProgramReviewed = program.isIsReviewed();
+        boolean isProgramToBeReviewd = program.isIsToBeReviewed();
+        int id = (int) program.getId();
+        int sameStatusPick = program.getSameStatusPick();
+        CampaignStatus status = program.getAdCampaignStatus();
+
+        AdPaymentDetails paymentDetails = program.getAdPaymentDetails();
+        AdPaymentStatus paymentStatus = paymentDetails.getPaymentStatus();
+        int campaignCost = paymentDetails.getAmount().getAmount();
+        String currency = paymentDetails.getAmount().getCurrencycode();
+        String createTime = DateUtils.convertLocalDateTimeToString(program.getCreatedOn(), NamedConstants.DATE_TIME_DASH_FORMAT);
+        String payerAccount = paymentDetails.getPayerAccount();
+        LocalDateTime timeOfLastStatusChange = program.getStatusChangeTime();
+
+        switch (status) {
+
+            case NEW: //move to PENDING_PAYMENT
+
+                //send one sms with all new campaigns or send an sms for each new campaign??
+                logger.warn("A new payment has been logged at: " + DateUtils.convertLocalDateTimeToString(timeOfLastStatusChange, NamedConstants.DATE_TIME_DASH_FORMAT));
+                SMSSenderUtils.generateAndSendNewCampaignMsg(createTime, campaignCost, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+                
+                moveCampaignToNextStep(program, CampaignStatus.PENDING_PAYMENT, databaseAdapter);
+                triggerPaymentProcessor(paymentDetails, campaignProcessorJobsData, paymentProcessorJobsData, clientPool);
+                break;
+
+            case PENDING_PAYMENT: //a txn PENDING_PAYMENT needs to sent for payment before being moved to PROCESSING
+
+                if (sameStatusPick > 0) {
+                    //check how long it's been pending_pending & see what todo
+                    logger.warn("Payment is still pending payment");
+                }
+
+                if (paymentStatus == AdPaymentStatus.PAY_INITIATED) {
+                    moveCampaignToNextStep(program, CampaignStatus.PROCESSING, databaseAdapter);
+
+                } else {
+
+                    incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
+                    triggerPaymentProcessor(paymentDetails, campaignProcessorJobsData, paymentProcessorJobsData, clientPool);
+
+                }
+                break;
+
+            case PROCESSING:
+
+                if (sameStatusPick > 0) {
+                    //check how long it's been pending_pending & see what todo
+                    //timeOfLastStatusChange
+                    logger.warn("Payment is still pending payment");
+                }
+
+                if (null != paymentStatus) {
+                    //1. optimise ad images/videos
+                    switch (paymentStatus) {
+
+                        case PAID:
+
+                            moveCampaignToNextStep(program, CampaignStatus.IN_REVIEW, databaseAdapter);
+                            break;
+
+                        case PAY_FAILED:
+
+                            program.setDescription("Campaign rejected because required payment of: " + currency + " " + campaignCost + " was not made");
+                            moveCampaignToNextStep(program, CampaignStatus.REJECTED, databaseAdapter);
+                            break;
+
+                        case PAY_REVERSED:
+
+                            program.setDescription("Campaign rejected because required payment of: " + currency + " " + campaignCost + " was reversed");
+                            moveCampaignToNextStep(program, CampaignStatus.REJECTED, databaseAdapter);
+                            break;
+
+                        case PAY_INITIATED:
+
+                            logger.warn("Payment is still in initiated state/not completed");
+                            incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
+                            break;
+
+                        case STATUS_UNKNOWN:
+
+                            SMSSenderUtils.generateAndSendCampaignEscalateMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+                            program.setDescription("Campaign escalated for manual intervention due to the payment status not being readily available");
+                            moveCampaignToNextStep(program, CampaignStatus.ESCALATED, databaseAdapter);
+                            break;
+
+                        default:
+                            incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
+                            break;
+                    }
+                }
+                break;
+
+            case IN_REVIEW:
+
+                if (sameStatusPick > 0) {
+                    logger.warn("Payment is still pending payment");
+                }
+
+                if (isProgramReviewed || !isProgramToBeReviewd) {
+                    moveCampaignToNextStep(program, CampaignStatus.ACTIVE, databaseAdapter);
+
+                } else {
+                    SMSSenderUtils.generateAndSendCampaignReviewAdminMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+                    incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
+
+                }
+                break;
+
+            case ACTIVE:
+                break;
+
+            case COMPLETED:
+                break;
+
+            case FLAGGED:
+                break;
+
+            case REJECTED:
+                break;
+
+            case DRAFT:
+                break;
+
+            case REVERSED:
+                break;
+
+            case ESCALATED:
+                break;
+
+            default:
+                break;
+        }
     }
 
     /**

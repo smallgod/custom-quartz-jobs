@@ -19,7 +19,7 @@ import org.quartz.JobDataMap;
 public class AdPaymentJobListener  implements JobListener {
     
     private static final LoggerUtil logger = new LoggerUtil(AdPaymentJobListener.class);
-    private static final String LISTENER_NAME = "AdPaymentJob_JOB_LISTENER";
+    private static final String LISTENER_NAME = "PAYMENT_JOB_LISTENER";
     
     @Override
     public String getName() {

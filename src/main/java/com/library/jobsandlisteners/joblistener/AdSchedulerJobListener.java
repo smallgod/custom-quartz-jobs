@@ -19,7 +19,7 @@ import org.quartz.JobDataMap;
 public class AdSchedulerJobListener  implements JobListener {
     
     private static final LoggerUtil logger = new LoggerUtil(AdSchedulerJobListener.class);
-    private static final String LISTENER_NAME = "AdScheduler_JOB_LISTENER";
+    private static final String LISTENER_NAME = "CAMPAIGNERSCHEDULER_JOB_LISTENER";
     
     @Override
     public String getName() {

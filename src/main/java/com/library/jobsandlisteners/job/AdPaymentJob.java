@@ -54,7 +54,7 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
             if (hasAcquiredLock) {
 
                 Boolean triggerNow = Boolean.FALSE;
-                Object triggerNowObj = jobsDataMap.get(NamedConstants.TRIGGER_NOW);
+                Object triggerNowObj = jobsDataMap.get(NamedConstants.TRIGGER_NOW_PAYPROCESSOR);
 
                 if (null != triggerNowObj) {
                     triggerNow = (Boolean) triggerNowObj;
@@ -63,7 +63,7 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                 //TriggerNow requests from campaignProcesor
                 if (triggerNow) {
 
-                    AdPaymentDetails paymentDetails = (AdPaymentDetails) jobsDataMap.get(NamedConstants.PAYMENTS_DATA);
+                    AdPaymentDetails paymentDetails = (AdPaymentDetails) jobsDataMap.get(NamedConstants.PAYMENTS_DETAILS);
                     makePayment(debitAccount, paymentDetails, databaseAdapter);
 
                 } else {
