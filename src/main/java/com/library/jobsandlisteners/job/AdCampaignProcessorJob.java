@@ -11,6 +11,7 @@ import com.library.datamodel.Json.DBSaveResponse;
 import com.library.datamodel.model.v1_0.AdPaymentDetails;
 import com.library.datamodel.model.v1_0.AdProgram;
 import com.library.dbadapter.DatabaseAdapter;
+import com.library.hibernate.CustomHibernate;
 import com.library.scheduler.CustomJobScheduler;
 import com.library.sgsharedinterface.ExecutableJob;
 import org.quartz.InterruptableJob;
@@ -29,6 +30,8 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import org.joda.time.LocalDateTime;
 
@@ -40,6 +43,8 @@ import org.joda.time.LocalDateTime;
  * @author smallgod
  */
 public class AdCampaignProcessorJob implements Job, InterruptableJob, ExecutableJob {
+
+    ExecutorService taskExecutorService = Executors.newFixedThreadPool(5);
 
     /*
     DRAFT("DRAFT"), //ad still in draft form, not yet placed
@@ -81,7 +86,8 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
                 RemoteRequest dbManagerUnit = thisJobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
                 HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
-                DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
+                //DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.EXTERNAL_DB_ACCESS);
+                CustomHibernate customHibernate = (CustomHibernate) jobsDataMap.get(NamedConstants.INTERNAL_DB_ACCESS);
 
                 Boolean triggerNow = Boolean.FALSE;
                 Object triggerNowObj = jobsDataMap.get(NamedConstants.TRIGGER_NOW_CAMPAIGNPROCESSOR);
@@ -96,19 +102,20 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                     logger.debug("CAMPAIGN_PROCESS TRIGGER_NOW called!!");
 
                     AdProgram program = (AdProgram) jobsDataMap.get(NamedConstants.CAMPAIGN_DETAILS);
-                    processAdCampaign(program, thisJobsData, secondJobsData, clientPool, databaseAdapter);
+                    processAdCampaign(program, thisJobsData, secondJobsData, clientPool, customHibernate);
 
                 } else {
 
                     Map<String, Object> resourceProps = new HashMap<>();
-                    resourceProps.put("campaignStatuses", new HashSet<>(Arrays.asList(CampaignStatus.NEW, CampaignStatus.PENDING_PAYMENT, CampaignStatus.PROCESSING, CampaignStatus.IN_REVIEW)));
+                    resourceProps.put("campaignStatuses", new HashSet<>(Arrays.asList(CampaignStatus.NEW, CampaignStatus.PENDING_PAYMENT, CampaignStatus.IN_REVIEW)));
 
-                    Set<AdProgram> campaignPrograms = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_PROGRAM, AdProgram.FETCH_CAMPAIGNS_BY_STATUS, resourceProps);
+                    //Set<AdProgram> campaignPrograms = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_PROGRAM, AdProgram.FETCH_CAMPAIGNS_BY_STATUS, resourceProps);
+                    Set<AdProgram> campaignPrograms = customHibernate.fetchEntities(AdProgram.FETCH_CAMPAIGNS_BY_STATUS, resourceProps);
 
                     if (!(null == campaignPrograms || campaignPrograms.isEmpty())) {
 
                         for (AdProgram program : campaignPrograms) {
-                            processAdCampaign(program, thisJobsData, secondJobsData, clientPool, databaseAdapter);
+                            processAdCampaign(program, thisJobsData, secondJobsData, clientPool, customHibernate);
                         }
 
                     } else {
@@ -152,23 +159,34 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
      * @param campaignProcessorJobsData
      * @param paymentProcessorJobsData
      * @param clientPool
+     * @param customHibernate
      * @return
      * @throws MyCustomException
      */
-    public boolean triggerPaymentProcessor(AdPaymentDetails paymentDetails, JobsConfig campaignProcessorJobsData, JobsConfig paymentProcessorJobsData, HttpClientPool clientPool) throws MyCustomException {
+    public boolean triggerPaymentProcessor(AdPaymentDetails paymentDetails, JobsConfig campaignProcessorJobsData, JobsConfig paymentProcessorJobsData, HttpClientPool clientPool, CustomHibernate customHibernate) throws MyCustomException {
 
-        CustomJobScheduler jobScheduler = new CustomJobScheduler(clientPool);
+        boolean isTriggered = Boolean.FALSE;
 
-        JobDataMap jobsDataMap = jobScheduler.createJobDataMap(campaignProcessorJobsData, paymentProcessorJobsData);
-        jobsDataMap.put(NamedConstants.TRIGGER_NOW_PAYPROCESSOR, Boolean.TRUE);
-        jobsDataMap.put(NamedConstants.PAYMENTS_DETAILS, paymentDetails);
+        if (paymentDetails.getPaymentStatus() == AdPaymentStatus.PAY_NEW) {
 
-        String paymentJobName = paymentProcessorJobsData.getJobName();
-        String paymentGroupName = paymentProcessorJobsData.getJobGroupName();
+            CustomJobScheduler jobScheduler = new CustomJobScheduler(clientPool, customHibernate, null);
 
-        jobScheduler.triggerJobNow(paymentJobName, paymentGroupName, jobsDataMap);
+            JobDataMap jobsDataMap = jobScheduler.createJobDataMap(campaignProcessorJobsData, paymentProcessorJobsData);
+            jobsDataMap.put(NamedConstants.TRIGGER_NOW_PAYPROCESSOR, Boolean.TRUE);
+            jobsDataMap.put(NamedConstants.PAYMENTS_DETAILS, paymentDetails);
+            jobsDataMap.put(NamedConstants.PAYMENTS_ID, paymentDetails.getId());
 
-        boolean isTriggered = jobScheduler.triggerJobNow(paymentJobName, paymentGroupName, jobsDataMap);
+            String paymentJobName = paymentProcessorJobsData.getJobName();
+            String paymentGroupName = paymentProcessorJobsData.getJobGroupName();
+
+            jobScheduler.triggerJobNow(paymentJobName, paymentGroupName, jobsDataMap);
+
+            isTriggered = jobScheduler.triggerJobNow(paymentJobName, paymentGroupName, jobsDataMap);
+
+        } else {
+
+            logger.warn("Can't trigger PaymentProcessor, paymentStatus is not 'PAY_NEW'");
+        }
 
         return isTriggered;
 
@@ -183,7 +201,7 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
      * @param databaseAdapter
      * @throws MyCustomException
      */
-    private void processAdCampaign(AdProgram program, JobsConfig campaignProcessorJobsData, JobsConfig paymentProcessorJobsData, HttpClientPool clientPool, DatabaseAdapter databaseAdapter) throws MyCustomException {
+    private void processAdCampaign(AdProgram program, JobsConfig campaignProcessorJobsData, JobsConfig paymentProcessorJobsData, HttpClientPool clientPool, CustomHibernate customHibernate) throws MyCustomException {
 
         boolean isProgramReviewed = program.isIsReviewed();
         boolean isProgramToBeReviewd = program.isIsToBeReviewed();
@@ -206,73 +224,60 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 //send one sms with all new campaigns or send an sms for each new campaign??
                 logger.warn("A new payment has been logged at: " + DateUtils.convertLocalDateTimeToString(timeOfLastStatusChange, NamedConstants.DATE_TIME_DASH_FORMAT));
                 SMSSenderUtils.generateAndSendNewCampaignMsg(createTime, campaignCost, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
-                
-                moveCampaignToNextStep(program, CampaignStatus.PENDING_PAYMENT, databaseAdapter);
-                triggerPaymentProcessor(paymentDetails, campaignProcessorJobsData, paymentProcessorJobsData, clientPool);
+
+                moveCampaignToNextStep(program, CampaignStatus.PENDING_PAYMENT, customHibernate);
+                triggerPaymentProcessor(program.getAdPaymentDetails(), campaignProcessorJobsData, paymentProcessorJobsData, clientPool, customHibernate);
                 break;
 
             case PENDING_PAYMENT: //a txn PENDING_PAYMENT needs to sent for payment before being moved to PROCESSING
 
                 if (sameStatusPick > 0) {
                     //check how long it's been pending_pending & see what todo
-                    logger.warn("Payment is still pending payment");
+                    logger.warn("Campaign is still pending payment");
                 }
 
-                if (paymentStatus == AdPaymentStatus.PAY_INITIATED) {
-                    moveCampaignToNextStep(program, CampaignStatus.PROCESSING, databaseAdapter);
-
-                } else {
-
-                    incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
-                    triggerPaymentProcessor(paymentDetails, campaignProcessorJobsData, paymentProcessorJobsData, clientPool);
-
-                }
-                break;
-
-            case PROCESSING:
-
-                if (sameStatusPick > 0) {
-                    //check how long it's been pending_pending & see what todo
-                    //timeOfLastStatusChange
-                    logger.warn("Payment is still pending payment");
-                }
+                CampaignStatus nextStep = CampaignStatus.PENDING_PAYMENT;
 
                 if (null != paymentStatus) {
-                    //1. optimise ad images/videos
+
                     switch (paymentStatus) {
 
-                        case PAID:
+                        case PAY_INITIATED:
+                            logger.warn("Payment is still in initiated state/not completed");
+                            incrementNoCampaignStatusChange(program, customHibernate);//status remains same, flag is incremented
+                            break;
 
-                            moveCampaignToNextStep(program, CampaignStatus.IN_REVIEW, databaseAdapter);
+                        case PAID:
+                            nextStep = CampaignStatus.IN_REVIEW;
+                            moveCampaignToNextStep(program, CampaignStatus.IN_REVIEW, customHibernate);
                             break;
 
                         case PAY_FAILED:
-
                             program.setDescription("Campaign rejected because required payment of: " + currency + " " + campaignCost + " was not made");
-                            moveCampaignToNextStep(program, CampaignStatus.REJECTED, databaseAdapter);
+                            nextStep = CampaignStatus.REJECTED;
+                            moveCampaignToNextStep(program, CampaignStatus.REJECTED, customHibernate);
                             break;
 
                         case PAY_REVERSED:
-
                             program.setDescription("Campaign rejected because required payment of: " + currency + " " + campaignCost + " was reversed");
-                            moveCampaignToNextStep(program, CampaignStatus.REJECTED, databaseAdapter);
-                            break;
-
-                        case PAY_INITIATED:
-
-                            logger.warn("Payment is still in initiated state/not completed");
-                            incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
+                            nextStep = CampaignStatus.ESCALATED;
+                            moveCampaignToNextStep(program, CampaignStatus.ESCALATED, customHibernate);
                             break;
 
                         case STATUS_UNKNOWN:
-
                             SMSSenderUtils.generateAndSendCampaignEscalateMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
                             program.setDescription("Campaign escalated for manual intervention due to the payment status not being readily available");
-                            moveCampaignToNextStep(program, CampaignStatus.ESCALATED, databaseAdapter);
+                            nextStep = CampaignStatus.ESCALATED;
+                            moveCampaignToNextStep(program, CampaignStatus.ESCALATED, customHibernate);
+                            break;
+
+                        case PAY_NEW:
+                            incrementNoCampaignStatusChange(program, customHibernate);//status remains same, flag is incremented
+                            triggerPaymentProcessor(paymentDetails, campaignProcessorJobsData, paymentProcessorJobsData, clientPool, customHibernate);
                             break;
 
                         default:
-                            incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
+                            incrementNoCampaignStatusChange(program, customHibernate);
                             break;
                     }
                 }
@@ -285,11 +290,11 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 }
 
                 if (isProgramReviewed || !isProgramToBeReviewd) {
-                    moveCampaignToNextStep(program, CampaignStatus.ACTIVE, databaseAdapter);
+                    moveCampaignToNextStep(program, CampaignStatus.ACTIVE, customHibernate);
 
                 } else {
                     SMSSenderUtils.generateAndSendCampaignReviewAdminMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
-                    incrementNoCampaignStatusChange(program, databaseAdapter);//status remains same, flag is incremented
+                    incrementNoCampaignStatusChange(program, customHibernate);//status remains same, flag is incremented
 
                 }
                 break;
@@ -321,23 +326,44 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
     }
 
     /**
+     *
+     * @param paymentId
+     * @param dbAdapter
+     * @return
+     * @throws MyCustomException
+     */
+    AdPaymentDetails getLatestPaymentDetailsById(long paymentId, DatabaseAdapter dbAdapter) throws MyCustomException {
+
+        Map<String, Object> resourceProps = new HashMap<>();
+        resourceProps.put("id", new HashSet<>(Arrays.asList(paymentId)));
+        Set<AdPaymentDetails> payments = dbAdapter.fetchEntity(EntityName.AD_PAYMENT, resourceProps, NamedConstants.ALL_COLUMNS);
+        AdPaymentDetails payment = (AdPaymentDetails) payments.toArray()[0];
+
+        return payment;
+    }
+
+    /**
      * Move a campaign to the next step
      *
      * @param programToMove the campaign to move
-     * @param nextStep the next step to move the campaign to
-     * @param dbAdapter connection to the database
-     * @return True if campaign is moved to next step
+     * @param suggestedNextStep the suggested next step to move the campaign to
+     * @param customHibernate
      * @throws com.library.customexception.MyCustomException
      */
-    public boolean moveCampaignToNextStep(AdProgram programToMove, CampaignStatus nextStep, DatabaseAdapter dbAdapter) throws MyCustomException {
+    public void moveCampaignToNextStep(AdProgram programToMove, CampaignStatus suggestedNextStep, CustomHibernate customHibernate) throws MyCustomException {
 
-        programToMove.setAdCampaignStatus(nextStep);
-        programToMove.setStatusChangeTime(DateUtils.getDateTimeNow());
-        programToMove.setSameStatusPick(0);
-        DBSaveResponse response = dbAdapter.saveOrUpdateEntity(programToMove, Boolean.FALSE);
+        CampaignStatus nextStep = suggestedNextStep;
 
-        return response.getSuccess();
-
+//        //move to next step depends on factors such as payment status
+//        AdPaymentDetails payment = getLatestPaymentDetailsById(programToMove.getAdPaymentDetails().getId(), dbAdapter);
+//
+//        programToMove.setAdPaymentDetails(payment);
+//        programToMove.setAdCampaignStatus(suggestedNextStep);
+//        programToMove.setStatusChangeTime(DateUtils.getDateTimeNow());
+//        programToMove.setSameStatusPick(0);
+//        DBSaveResponse response = dbAdapter.saveOrUpdateEntity(programToMove, Boolean.FALSE);
+//        return response.getSuccess();
+        customHibernate.updateCampaignStatusChangeColumns(suggestedNextStep, programToMove.getDescription(), 0, DateUtils.getDateTimeNow(), programToMove.getId());
     }
 
     /**
@@ -345,16 +371,19 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
      * maintained the same status
      *
      * @param programInSameStatus
-     * @param dbAdapter
+     * @param customHibernate
      * @return True if sameStatusPick flag is incremented
      * @throws MyCustomException
      */
-    public boolean incrementNoCampaignStatusChange(AdProgram programInSameStatus, DatabaseAdapter dbAdapter) throws MyCustomException {
+    public void incrementNoCampaignStatusChange(AdProgram programInSameStatus, CustomHibernate customHibernate) throws MyCustomException {
 
-        programInSameStatus.setSameStatusPick(programInSameStatus.getSameStatusPick() + 1);
-        DBSaveResponse response = dbAdapter.saveOrUpdateEntity(programInSameStatus, Boolean.FALSE);
-
-        return response.getSuccess();
+//        AdPaymentDetails payment = getLatestPaymentDetailsById(programInSameStatus.getAdPaymentDetails().getId(), dbAdapter);
+//
+//        programInSameStatus.setAdPaymentDetails(payment);
+//        programInSameStatus.setSameStatusPick(programInSameStatus.getSameStatusPick() + 1);
+//        DBSaveResponse response = dbAdapter.saveOrUpdateEntity(programInSameStatus, Boolean.FALSE);
+//        return response.getSuccess();
+        customHibernate.updateCampaignSameStatusColumns(programInSameStatus.getSameStatusPick() + 1, programInSameStatus.getId());
 
     }
 

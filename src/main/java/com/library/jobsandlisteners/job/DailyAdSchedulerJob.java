@@ -77,7 +77,7 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
             RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
             RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
             HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
-            DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
+            DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.EXTERNAL_DB_ACCESS);
 
             //1. SETUP STEP-ONE
             GenerateIdRequest generateIdRequest = new GenerateIdRequest();
@@ -288,7 +288,7 @@ public class DailyAdSchedulerJob implements Job, InterruptableJob, ExecutableJob
         
         RemoteRequest centralUnit = jobsData.getRemoteUnitConfig().getAdCentralRemoteUnit();
         HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
-        DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.DB_ADAPTER);
+        DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.EXTERNAL_DB_ACCESS);
 
         //logger.debug("size of jobMap: " + jobMap.size());
         /*logger.debug("sleeping for 30s at: " + new DateTime().getSecondOfDay());
