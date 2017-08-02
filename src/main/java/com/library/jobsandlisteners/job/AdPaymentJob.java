@@ -37,6 +37,8 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
 
     @Override
     public void execute(JobExecutionContext jec) throws JobExecutionException {
+        
+        
 
         //synchronized (NamedConstants.AD_PAYMENT_MUTEX) {
         JobDataMap jobsDataMap = jec.getMergedJobDataMap();
@@ -58,6 +60,9 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                 if (null != triggerNowObj) {
                     triggerNow = (Boolean) triggerNowObj;
                 }
+                
+                logger.info("PAYMENT JOB called to EXECUTE - triggered NOW == " + triggerNow);
+                logger.info("Name of thread is: " + Thread.currentThread().getName() + " id: " + Thread.currentThread().getId() + " string: " + Thread.currentThread().toString());
 
                 //TriggerNow requests from campaignProcesor
                 if (triggerNow) {
@@ -129,6 +134,8 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
      */
     private void makePayment(DebitClient debitAccount, AdPaymentDetails payment, CustomHibernate customHibernate) throws MyCustomException {
 
+        logger.info("MAKEPAYMENT called with payStatus == " + payment.getPaymentStatus());
+        
         //only initiate payment for new payments
         if (payment.getPaymentStatus() == AdPaymentStatus.PAY_NEW) {
             
@@ -149,11 +156,9 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
                 switch (status) {
 
                     case PROCESSING:
-                        logger.info("STATUS is:::::::::::::::::::::::: " + status + " GOING TO UPDATE STATUS IN DB");
                         payment.setPaymentStatus(AdPaymentStatus.PAY_INITIATED);
                         payment.setAggregatorPaymentID(reference);
                         movePaymentToNextStep(payment, AdPaymentStatus.PAY_INITIATED, reference, responseMessage, customHibernate);
-                        logger.info("STATUS is:::::::::::::::::::::::: " + status + " AFTER UPDATING STATUS IN DB");
                         break;
 
                     case FAILED:

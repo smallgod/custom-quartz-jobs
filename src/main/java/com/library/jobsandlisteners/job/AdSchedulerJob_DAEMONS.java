@@ -5,10 +5,13 @@
  */
 package com.library.jobsandlisteners.job;
 
+import com.library.datamodel.Constants.ProcessingUnitState;
+import com.library.datamodel.Json.AdFetchRequest;
 import com.library.httpconnmanager.HttpClientPool;
 import com.library.configs.JobsConfig;
 import com.library.customexception.MyCustomException;
 import com.library.datamodel.Constants.APIMethodName;
+import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.FetchStatus;
 import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
@@ -28,8 +31,8 @@ import com.library.datamodel.model.v1_0.AdSchedule;
 import com.library.datamodel.model.v1_0.AdScreen;
 import com.library.datamodel.model.v1_0.AdTerminal;
 import com.library.datamodel.model.v1_0.AdText;
+import com.library.dbadapter.DatabaseAdapter;
 import com.library.fileuploadclient.MultipartFileUploader;
-import com.library.hibernate.CustomHibernate;
 import com.library.sgsharedinterface.ExecutableJob;
 import com.library.utilities.GeneralUtils;
 import org.quartz.InterruptableJob;
@@ -62,17 +65,13 @@ import org.joda.time.LocalTime;
  *
  * @author smallgod
  */
-public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
+public class AdSchedulerJob_DAEMONS implements Job, InterruptableJob, ExecutableJob {
 
     private static final LoggerUtil logger = new LoggerUtil(AdSchedulerJob.class);
 
     @Override
     public void execute(JobExecutionContext jec) throws JobExecutionException {
 
-        //schedule ads - bind to DSM in window that has no advert running at the time
-        //Algorithm should minimise the number of times we call/bind /to DSM
-        //if CAMPAIGN STATUS == ACTIVE && SCHEDULE == FIXED && FETCH_STATUS == TO_FETCH, pick the schedule otherwise ignore campaign
-        //if CAMPAIGN STATUS == REJECTED, delete program out of AdSchedule if its ID exists there
         try {
 
             boolean hasAcquiredLock = NamedConstants.FETCH_SCHEDULE_LOCK.tryLock(30, TimeUnit.SECONDS);
@@ -82,30 +81,33 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 //assume we are generating 2 file ids only
                 //we should also send ids we think exist to the dsm bridge service to confirm for us, so that if they don't exist, new ids are generated
                 JobDetail jobDetail = jec.getJobDetail();
-                String thisJobName = jobDetail.getKey().getName();
+                String jobName = jobDetail.getKey().getName();
 
                 JobDataMap jobsDataMap = jec.getMergedJobDataMap();
-                JobsConfig thisJobsData = (JobsConfig) jobsDataMap.get(thisJobName);
-                JobsConfig adDisplayProcessorconfig = (JobsConfig) jobsDataMap.get(NamedConstants.THIRD_JOBSDATA);
 
-                RemoteRequest dbManagerUnit = thisJobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
-                RemoteRequest centralUnit = thisJobsData.getRemoteUnitConfig().getAdCentralRemoteUnit();
-                RemoteRequest dsmRemoteUnit = thisJobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
+                JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
+
+                RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
+                RemoteRequest centralUnit = jobsData.getRemoteUnitConfig().getAdCentralRemoteUnit();
+                RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
                 HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
-                //DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.EXTERNAL_DB_ACCESS);
-                CustomHibernate customHibernate = (CustomHibernate) jobsDataMap.get(NamedConstants.INTERNAL_DB_ACCESS);
+                DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.EXTERNAL_DB_ACCESS);
 
                 Boolean triggerNow = Boolean.FALSE;
-                Object triggerNowObj = jobsDataMap.get(NamedConstants.TRIGGER_NOW_DISPLAYPROCESSOR);
+                Object triggerNowObj = jobsDataMap.get(NamedConstants.TRIGGER_NOW_PAYPROCESSOR);
 
                 if (null != triggerNowObj) {
                     triggerNow = (Boolean) triggerNowObj;
                 }
 
+                Set<String> columnsToFetch = new HashSet<>();
+                columnsToFetch.add("ALL");
+
+                //Fetch pending ad programs from DB
                 //Fetch Records from AdScheduler Table for date (today) and with to_update field == False
                 //If found, get screen_id / terminal_id for this pending entry
                 //If found, do the needful and send request to DSM
-                Map<String, Object> fetchProps = new HashMap<>();
+                Map<String, Object> pendingAdsProps = new HashMap<>();
 
                 Set<FetchStatus> fetch = new HashSet<>();
                 fetch.add(FetchStatus.TO_FETCH);
@@ -113,11 +115,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 Set<LocalDate> displayDateSet = new HashSet<>();
                 displayDateSet.add(DateUtils.getDateNow());
 
-                fetchProps.put("fetchStatus", fetch);  //whether or not we need to fetch this schedule and update DSM and the row as well
-                fetchProps.put("displayDate", displayDateSet);
+                pendingAdsProps.put("fetchStatus", fetch);  //whether or not we need to fetch this schedule and update DSM and the row as well
+                pendingAdsProps.put("displayDate", displayDateSet);
 
-                //Set<AdSchedule> fetchedSchedules = databaseAdapter.fetchBulk(EntityName.AD_SCHEDULE, fetchProps, columnsToFetch);
-                Set<AdSchedule> fetchedSchedules = customHibernate.fetchBulk(AdSchedule.class, fetchProps);
+                Set<AdSchedule> fetchedSchedules = databaseAdapter.fetchBulk(EntityName.AD_SCHEDULE, pendingAdsProps, columnsToFetch);
 
                 if (null == fetchedSchedules || fetchedSchedules.isEmpty()) {
 
@@ -131,9 +132,12 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                     //Each Schedule represents a single(1) screen for that given date/day
                     for (AdSchedule adSchedule : fetchedSchedules) {
+                        //Update the schedule in DB so that we dont fetch it again
+                        adSchedule.setFetchStatus(FetchStatus.FETCHED);
+                        schedulesToUpdate.add(adSchedule);
 
                         //AdScreen adScreen = null;
-                        AdScreen adScreen = adSchedule.getAdScreen(); //"137::73440000;145::73740000;152::81480000;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
+                        AdScreen adScreen = adSchedule.getAdScreen(); //"764::4563::T;905::2355::F;" ----> "prog_entity_id"::"time_in_millis::whether_prog_is_sent_to_dsm"
                         LocalDate displayDate = adSchedule.getDisplayDate();
                         String scheduleString = adSchedule.getScheduleDetail();
                         long scheduleId = adSchedule.getScheduleId();
@@ -199,9 +203,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                         programProps.put("id", mapOfProgEntityIdsAndDisplayTime.keySet());
 
                         //Fetch Program details to check which ones we need to generate ids for
-                        //Set<AdProgram> fetchedPrograms = databaseAdapter.fetchBulk(EntityName.AD_PROGRAM, programProps, NamedConstants.ALL_COLUMNS);
-                        //Set<AdProgram> fetchedPrograms = customHibernate.fetchEntities(AdProgram.FETCH_ALL_CAMPAIGNS_BY_CAMPAIGN_ID, programProps);
-                        Set<AdProgram> fetchedPrograms = customHibernate.fetchBulk(AdProgram.class, programProps);
+                        Set<AdProgram> fetchedPrograms = databaseAdapter.fetchBulk(EntityName.AD_PROGRAM, programProps, columnsToFetch);
 
                         if (!(null == fetchedPrograms || fetchedPrograms.isEmpty())) {
 
@@ -212,8 +214,6 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                             //need to have the Ids generated before performing some operations below, cuze they depend on those Ids
                             for (AdProgram adProgram : fetchedPrograms) {
-
-                                //if CAMPAIGN STATUS == ACTIVE pick the campaign otherwise ignore campaign
                                 numOfFileIdsNeeded += adProgram.getNumOfFileResources();
                                 Boolean isDSMUpdated = adProgram.isIsDSMUpdated();
                                 if (isDSMUpdated) {
@@ -298,7 +298,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                             AdSetupRequest.ProgramDetail progDetail = adSetupRequest.new ProgramDetail();
 
-                            List<ProgramDetail.Program> programs = createProgramList(customHibernate, progDetail, fetchedPrograms, mapOfProgEntityIdsAndDisplayTime, progIdsGenerated, fileIdsGenerated);
+                            List<ProgramDetail.Program> programs = createProgramList(databaseAdapter, progDetail, fetchedPrograms, mapOfProgEntityIdsAndDisplayTime, progIdsGenerated, fileIdsGenerated);
 
                             progDetail.setDisplayDate(DateUtils.convertLocalDateToString(DateUtils.getDateNow(), NamedConstants.DATE_DASH_FORMAT)); //we can have several ProgramDetail with display times, but only doing today/now
                             progDetail.setProgramIds(programs);
@@ -329,7 +329,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                             if (!(allUploadableMediaResources == null || allUploadableMediaResources.isEmpty())) {
 
-                                uploadMediaResources(allUploadableMediaResources, customHibernate, dsmRemoteUnit);
+                                uploadMediaResources(allUploadableMediaResources, databaseAdapter, dsmRemoteUnit);
                             }
 
                             //Send schedule Request to DSM
@@ -346,15 +346,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                             logger.warn("There are empty or no AdPrograms returned for this schedule: " + newerScheduleString);
                         }
 
-                        //Update the schedule in DB so that we dont fetch it again
-                        adSchedule.setFetchStatus(FetchStatus.FETCHED);
-                        //schedulesToUpdate.add(adSchedule);
-                        customHibernate.updateEntity(adSchedule);
-
                     }
 
-                    //databaseAdapter.SaveOrUpdateBulk(EntityName.AD_SCHEDULE, schedulesToUpdate, Boolean.FALSE);
-                    //customHibernate.updateBulk(schedulesToUpdate);
+                    databaseAdapter.SaveOrUpdateBulk(EntityName.AD_SCHEDULE, schedulesToUpdate, Boolean.FALSE);
                 }
 
             } else {
@@ -388,10 +382,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * Update in db uploaded/deleted files
      *
      * @param deletedFiles
-     * @param customHibernate
+     * @param databaseAdapter
      * @throws MyCustomException
      */
-    public void updateUploadedFilesHelper(Set<FileDetails> deletedFiles, CustomHibernate customHibernate) throws MyCustomException {
+    public void updateUploadedFilesHelper(Set<FileDetails> deletedFiles, DatabaseAdapter databaseAdapter) throws MyCustomException {
 
         for (FileDetails fileDetails : deletedFiles) {
 
@@ -403,10 +397,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             resourceProps.put("uploadId", new HashSet<>(Arrays.asList(uploadId)));
             resourceProps.put("campaignId", new HashSet<>(Arrays.asList(campaignId)));
 
-            //AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, fetchProps, columnsToFetch);
+            //AdResource adResourceFromDB = (AdResource) databaseAdapter.fetchEntity(EntityName.AD_RESOURCE, resourceProps, columnsToFetch);
             //Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RES_BY_CAMPNID_N_UPLDID, "uploadId", uploadId);
-            //Set<AdResource> adResources = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_RESOURCE, AdResource.FETCH_RES_BY_CAMPNID_N_UPLDID, fetchProps);
-            Set<AdResource> adResources = customHibernate.fetchEntities(AdResource.FETCH_RES_BY_CAMPNID_N_UPLDID, resourceProps);
+            Set<AdResource> adResources = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_RESOURCE, AdResource.FETCH_RES_BY_CAMPNID_N_UPLDID, resourceProps);
 
             if (!(adResources == null || adResources.isEmpty())) {
 
@@ -415,8 +408,9 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                 adResourceFromDB.setIsUploadedToDSM(Boolean.TRUE);
                 adResourceFromDB.setResourceId(fileId);
 
-                //databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
-                customHibernate.updateEntity(adResourceFromDB);
+                logger.warn("Num of Res for this prog: " + adResourceFromDB.getAdResourcePrograms().size());
+
+                databaseAdapter.saveOrUpdateEntity(adResourceFromDB, Boolean.FALSE);
 
             } else {
                 logger.warn("AdResource with upload id: " + uploadId + ", NOT found in the database");
@@ -467,11 +461,11 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
     /**
      *
      * @param allUploadableMediaResources
-     * @param customHibernate
+     * @param databaseAdapter
      * @param dsmRemoteUnit
      * @throws MyCustomException
      */
-    public void uploadMediaResources(Map<Integer, List<AdSetupRequest.ProgramDetail.Program.Resources>> allUploadableMediaResources, CustomHibernate customHibernate, RemoteRequest dsmRemoteUnit) throws MyCustomException {
+    public void uploadMediaResources(Map<Integer, List<AdSetupRequest.ProgramDetail.Program.Resources>> allUploadableMediaResources, DatabaseAdapter databaseAdapter, RemoteRequest dsmRemoteUnit) throws MyCustomException {
 
         String fileUploadDir = NamedConstants.FILE_UPLOAD_DIR; //put this guy in the configs, see how to do it
         Map<Long, FileDetails> filesToUpload = new HashMap<>();
@@ -517,7 +511,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             Set<FileDetails> deletedFiles = deleteFilesHelper(fileUploadResponse, filesToUpload);
 
             //update uploaded/deleted files
-            updateUploadedFilesHelper(deletedFiles, customHibernate);
+            updateUploadedFilesHelper(deletedFiles, databaseAdapter);
 
             iteration++;
 
@@ -554,7 +548,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param adResources
      * @return
      */
-    List<ProgramDetail.Program> createProgramList(CustomHibernate customHibernate, AdSetupRequest.ProgramDetail progDetail, Set<AdProgram> adProgramList, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime, List<String> progIdsGenerated, List<String> fileIdsGenerated) throws MyCustomException {
+    List<ProgramDetail.Program> createProgramList(DatabaseAdapter databaseAdapter, AdSetupRequest.ProgramDetail progDetail, Set<AdProgram> adProgramList, Map<Integer, List<Integer>> mapOfProgIdsAndDisplayTime, List<String> progIdsGenerated, List<String> fileIdsGenerated) throws MyCustomException {
 
         List<ProgramDetail.Program> programList = new ArrayList<>();
         ProgramDetail.Program prog;
@@ -597,7 +591,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
                 case FULL_SCREEN:
                     textList = new ArrayList<>();
-                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, customHibernate);
+                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, databaseAdapter);
                     break;
 
                 case AV_ONLY:
@@ -606,23 +600,23 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                     break;
 
                 case FULLSCREEN_TEXT:
-                    textList = getTextList(prog, campaignId, customHibernate);
-                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, customHibernate);
+                    textList = getTextList(prog, campaignId, databaseAdapter);
+                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, databaseAdapter);
                     break;
 
                 case TEXT_ONLY:
-                    textList = getTextList(prog, campaignId, customHibernate);
+                    textList = getTextList(prog, campaignId, databaseAdapter);
                     resourcesList = new ArrayList<>();
                     break;
 
                 case THREE_SPLIT:
-                    textList = getTextList(prog, campaignId, customHibernate);
-                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, customHibernate);
+                    textList = getTextList(prog, campaignId, databaseAdapter);
+                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, databaseAdapter);
                     break;
 
                 case TWO_SPLIT:
-                    textList = getTextList(prog, campaignId, customHibernate);
-                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, customHibernate);
+                    textList = getTextList(prog, campaignId, databaseAdapter);
+                    resourcesList = getResourcesList(prog, fileIdsGenerated, campaignId, databaseAdapter);
                     break;
 
                 default:
@@ -700,14 +694,10 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param textResources
      * @return
      */
-    private List<Text> getTextList(ProgramDetail.Program prog, int campaignId, CustomHibernate customHibernate) throws MyCustomException {
+    private List<Text> getTextList(ProgramDetail.Program prog, int campaignId, DatabaseAdapter databaseAdapter) throws MyCustomException {
 
         //Set<AdText> textResources = databaseAdapter.fetchResources(EntityName.AD_TEXT, AdText.FETCH_TEXT, "campaignId", campaignId);
-        //Set<AdText> textResources = databaseAdapter.fetchResources(EntityName.AD_TEXT, AdText.FETCH_TEXT, "adTextPrograms.campaignId", campaignId);
-        Map<String, Object> fetchProps = new HashMap<>();
-        fetchProps.put("adTextPrograms.campaignId", new HashSet<>(Arrays.asList(campaignId)));
-
-        Set<AdText> textResources = customHibernate.fetchBulk(AdText.class, fetchProps);
+        Set<AdText> textResources = databaseAdapter.fetchResources(EntityName.AD_TEXT, AdText.FETCH_TEXT, "adTextPrograms.campaignId", campaignId);
 
         List<Text> textList = new ArrayList<>();
 
@@ -733,13 +723,11 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
      * @param fileIdsGenerated
      * @return
      */
-    private List<Resources> getResourcesList(ProgramDetail.Program prog, List<String> fileIdsGenerated, int campaignId, CustomHibernate customHibernate) throws MyCustomException {
+    private List<Resources> getResourcesList(ProgramDetail.Program prog, List<String> fileIdsGenerated, int campaignId, DatabaseAdapter databaseAdapter) throws MyCustomException {
 
-        //Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RESOURCE_BY_CAMPAIGNID, "adResourcePrograms.campaignId", campaignId);
-        Map<String, Object> fetchProps = new HashMap<>();
-        fetchProps.put("adResourcePrograms.campaignId", new HashSet<>(Arrays.asList(campaignId)));
+        Set<AdResource> adResources = databaseAdapter.fetchResources(EntityName.AD_RESOURCE, AdResource.FETCH_RESOURCE_BY_CAMPAIGNID, "adResourcePrograms.campaignId", campaignId);
 
-        Set<AdResource> adResources = customHibernate.fetchBulk(AdResource.class, fetchProps);
+        logger.debug("Size of resources for campaignId: " + campaignId + ", is: " + adResources.size());
 
         List<Resources> resourcesList = new ArrayList<>();
         int generatedResourceIdCount = 0;
@@ -768,6 +756,45 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
         }
 
         return resourcesList;
+    }
+
+    public void executeOLD(JobExecutionContext jec) throws JobExecutionException, MyCustomException {
+
+        JobDetail jobDetail = jec.getJobDetail();
+        String jobName = jobDetail.getKey().getName();
+
+        JobDataMap jobsDataMap = jec.getMergedJobDataMap();
+
+        JobsConfig jobsData = (JobsConfig) jobsDataMap.get(jobName);
+
+        RemoteRequest dbManagerUnit = jobsData.getRemoteUnitConfig().getAdDbManagerRemoteUnit();
+        RemoteRequest dsmRemoteUnit = jobsData.getRemoteUnitConfig().getDSMBridgeRemoteUnit();
+        HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
+        DatabaseAdapter databaseAdapter = (DatabaseAdapter) jobsDataMap.get(NamedConstants.EXTERNAL_DB_ACCESS);
+
+        //logger.debug("size of jobMap: " + jobMap.size());
+        /*logger.debug("sleeping for 30s at: " + new DateTime().getSecondOfDay());
+         try {
+         logger.debug("mimick job execution.....");
+         Thread.sleep(30000L);
+         } catch (InterruptedException ex) {logger.debug("error trying to sleep: " + ex.getMessage());
+         }
+         logger.debug("done sleeping for 30s at: " + new DateTime().getSecondOfDay());
+         */
+        AdFetchRequest request = new AdFetchRequest();
+        request.setMethodName("ADFETCH_REQUEST");
+        AdFetchRequest.Params params = request.new Params();
+        params.setStatus(ProcessingUnitState.POLL.getValue()); //need Enum
+        request.setParams(params);
+
+        String jsonRequest = GeneralUtils.convertToJson(request, AdFetchRequest.class);
+
+        logger.debug("New AdFetch Request: " + jsonRequest);
+
+        String response = clientPool.sendRemoteRequest(jsonRequest, dsmRemoteUnit);
+
+        logger.info("Response from Central Server: " + response);
+
     }
 
     @Override
