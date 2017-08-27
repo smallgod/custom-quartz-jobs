@@ -9,6 +9,8 @@ import com.library.httpconnmanager.HttpClientPool;
 import com.library.configs.JobsConfig;
 import com.library.customexception.MyCustomException;
 import com.library.datamodel.Constants.APIMethodName;
+import com.library.datamodel.Constants.AdSlotsReserve;
+import com.library.datamodel.Constants.CampaignStatus;
 import com.library.datamodel.Constants.FetchStatus;
 import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
@@ -150,13 +152,20 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
                             int scheduleTime = entry.getKey();
                             long progEntityId = entry.getValue();
 
+                            String millisOfDayNowStr = DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(millisOfDayNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT);
+                            String scheduleTimeStr = DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(scheduleTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT);
+
                             logger.debug("ProgEntityId : " + progEntityId);
-                            logger.debug("millisOfDay  : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(millisOfDayNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + millisOfDayNow);
-                            logger.debug("Schedule time: " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(scheduleTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + scheduleTime);
+                            logger.debug("millisOfDay  : " + millisOfDayNowStr + " - in millis: " + millisOfDayNow);
+                            logger.debug("Schedule time: " + scheduleTimeStr + " - in millis: " + scheduleTime);
 
                             if (scheduleTime >= millisOfDayNow) {
 
                                 newerScheduleString += (progEntityId + "::" + scheduleTime + ";");
+                            } else {
+                                //schedule time passed - send notification
+                                customHibernate.updateCampaignStatusChangeColumns(CampaignStatus.ESCALATED, AdSlotsReserve.FREE, "Tried to play campaign but found display time: " + scheduleTimeStr + " in the past (time now: " + millisOfDayNowStr + " )", 0, DateUtils.getDateTimeNow(), progEntityId);
+
                             }
 
                         }

@@ -129,7 +129,7 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 } else {
 
                     Map<String, Object> resourceProps = new HashMap<>();
-                    resourceProps.put("campaignStatuses", new HashSet<>(Arrays.asList(CampaignStatus.NEW, CampaignStatus.PENDING_PAYMENT, CampaignStatus.IN_REVIEW)));
+                    resourceProps.put("campaignStatuses", new HashSet<>(Arrays.asList(CampaignStatus.NEW, CampaignStatus.PENDING_PAYMENT, CampaignStatus.IN_REVIEW, CampaignStatus.ACTIVE)));
 
                     //Set<AdProgram> campaignPrograms = databaseAdapter.fetchEntitiesByNamedQuery(EntityName.AD_PROGRAM, AdProgram.FETCH_CAMPAIGNS_BY_STATUS, resourceProps);
                     Set<AdProgram> campaignPrograms = customHibernate.fetchEntities(AdProgram.FETCH_CAMPAIGNS_BY_STATUS, resourceProps);
@@ -382,6 +382,7 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 if (isProgramReviewed || !isProgramToBeReviewd) {
                     //if scheduled
                     if (bookNewCampaignSchedule(program, customHibernate)) {
+                        program.setDescription("Success, campaign has been successfuly queued for scheduling/display");
                         program.setAdSlotReserve(AdSlotsReserve.FIXED);
                         moveCampaignToNextStep(program, CampaignStatus.ACTIVE, customHibernate);
                     }
@@ -393,10 +394,25 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 break;
 
             case ACTIVE:
-                if (sameStatusPick == 0) {
+
+                //check if campaign end-date is still valid else move campaing to completed
+                LocalDate endDate = program.getEndAdDate();
+                boolean isEndDateValid = DateUtils.isDateInTheFuture(endDate);
+                
+                logger.debug("End Date         : " + endDate);
+                logger.debug("end date is valid: " + isEndDateValid);
+
+                if (!isEndDateValid) {
+
+                    program.setDescription("Success, campaign completed successfuly");
+                    program.setAdSlotReserve(AdSlotsReserve.FREE);
+                    moveCampaignToNextStep(program, CampaignStatus.COMPLETED, customHibernate);
+
+                } else if (sameStatusPick == 0) {
                     triggerAdDisplayProcessor(program, campaignProcessorJobsData, paymentProcessorJobsData, adDisplayProcessorJobsData, clientPool, customHibernate);
 
                 }
+
                 break;
 
             case COMPLETED:
