@@ -2,6 +2,7 @@ package com.library.jobsandlisteners.job;
 
 import com.library.httpconnmanager.HttpClientPool;
 import com.library.configs.JobsConfig;
+import com.library.customexception.ErrorWrapper;
 import com.library.customexception.MyCustomException;
 import com.library.datamodel.Constants.AdPaymentStatus;
 import com.library.datamodel.Constants.AdSlotsReserve;
@@ -10,8 +11,8 @@ import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.ErrorCode;
 import com.library.datamodel.Constants.FetchStatus;
 import com.library.datamodel.Constants.NamedConstants;
-import com.library.datamodel.Json.DBSaveResponse;
 import com.library.datamodel.Json.TimeSlot;
+import com.library.datamodel.model.v1_0.AdCampaignStats;
 import com.library.datamodel.model.v1_0.AdClient;
 import com.library.datamodel.model.v1_0.AdPaymentDetails;
 import com.library.datamodel.model.v1_0.AdProgram;
@@ -298,7 +299,13 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                     logger.warn("Campaign is still NEW");
                 } else {
                     //send one sms with all new campaigns or send an sms for each new campaign??
-                    SMSSenderUtils.generateAndSendNewCampaignMsg(createTime, campaignCost, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+                    //if we fail to send SMS for one reason or another, we contine normal process flow but throw an alert (ERROR!!) indicating SMS not sent
+                    try {
+                        SMSSenderUtils.generateAndSendNewCampaignMsg(createTime, campaignCost, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+                    } catch (MyCustomException exe) {
+                        ErrorWrapper error = (ErrorWrapper) exe.getErrors().toArray()[0];
+                        logger.error("New Campaign hit system, but failed to send notification SMS to admin: " + error.getErrorDetails());
+                    }
                 }
                 //temporarily reserve booked ad slots pending payment
                 program.setAdSlotReserve(AdSlotsReserve.TEMPORAL);
@@ -343,7 +350,12 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                             break;
 
                         case STATUS_UNKNOWN:
-                            SMSSenderUtils.generateAndSendCampaignEscalateMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+                            try {
+                                SMSSenderUtils.generateAndSendCampaignEscalateMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+                            } catch (MyCustomException exe) {
+                                ErrorWrapper error = (ErrorWrapper) exe.getErrors().toArray()[0];
+                                logger.error("Campaign status un-known, but failed to send notification SMS to admin: " + error.getErrorDetails());
+                            }
                             nextStep = CampaignStatus.ESCALATED;
                             campaignStatusDesc = "Campaign escalated for manual intervention due to the payment status not being readily available";
                             break;
@@ -375,7 +387,14 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 if (sameStatusPick > 0) {
                     logger.warn("Payment is still pending payment");
                 } else {
-                    SMSSenderUtils.generateAndSendCampaignReviewAdminMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+
+                    //if we fail to send SMS for one reason or another, we contine normal process flow but throw an alert (ERROR!!) indicating SMS not sent
+                    try {
+                        SMSSenderUtils.generateAndSendCampaignReviewAdminMsg(id, payerAccount, NamedConstants.ADMIN_SMS_RECIPIENT, clientPool);
+                    } catch (MyCustomException exe) {
+                        ErrorWrapper error = (ErrorWrapper) exe.getErrors().toArray()[0];
+                        logger.error("New Campaign in review, but failed to send notification SMS to admin: " + error.getErrorDetails());
+                    }
 
                 }
 
@@ -397,16 +416,28 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
                 //check if campaign end-date is still valid else move campaing to completed
                 LocalDate endDate = program.getEndAdDate();
-                boolean isEndDateValid = DateUtils.isDateInTheFuture(endDate);
-                
+                boolean isEndDateInThePast = DateUtils.isDateInThePast(endDate);
+
                 logger.debug("End Date         : " + endDate);
-                logger.debug("end date is valid: " + isEndDateValid);
+                logger.debug("end date is valid: " + isEndDateInThePast);
 
-                if (!isEndDateValid) {
+                if (isEndDateInThePast) {
 
-                    program.setDescription("Success, campaign completed successfuly");
+                    AdCampaignStats campaignStats = program.getAdCampaignStats();
+                    int timesAdPlayed = campaignStats.getNumOfTimesAdHasPlayed();
+                    int timesAdWasToPlay = campaignStats.getNumOfTimesAdIsToPlay();
+
                     program.setAdSlotReserve(AdSlotsReserve.FREE);
-                    moveCampaignToNextStep(program, CampaignStatus.COMPLETED, customHibernate);
+
+                    if (timesAdPlayed >= timesAdWasToPlay) {
+                        //completed successfuly
+                        program.setDescription("Campaign completed! Displayed - " + timesAdPlayed + " / " + timesAdWasToPlay + " times");
+                        moveCampaignToNextStep(program, CampaignStatus.COMPLETED, customHibernate);
+                    } else {
+                        //completed but didnt play all times paid for - might want to change status and description ??
+                        program.setDescription("Campaign ended! Displayed - " + timesAdPlayed + " / " + timesAdWasToPlay + " times");
+                        moveCampaignToNextStep(program, CampaignStatus.COMPLETED, customHibernate);
+                    }
 
                 } else if (sameStatusPick == 0) {
                     triggerAdDisplayProcessor(program, campaignProcessorJobsData, paymentProcessorJobsData, adDisplayProcessorJobsData, clientPool, customHibernate);

@@ -690,6 +690,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
             terminal.setProgramIdList(programIdList);
             terminal.setTaskIdX(adTerminal.getTaskIdX());
             terminal.setTaskIdY(adTerminal.getTaskIdY());
+            terminal.setTaskIdZ(adTerminal.getTaskIdZ());
             terminal.setTaskName(adTerminal.getTerminalName());
             terminal.setTerminalId(adTerminal.getTerminalId());
             terminal.setTerminalHeight(adScreen.getDisplayHeight()); //get these from screen terminal supports

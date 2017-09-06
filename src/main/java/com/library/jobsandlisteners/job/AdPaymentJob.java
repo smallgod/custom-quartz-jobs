@@ -38,8 +38,6 @@ public class AdPaymentJob implements Job, InterruptableJob, ExecutableJob {
     @Override
     public void execute(JobExecutionContext jec) throws JobExecutionException {
         
-        
-
         //synchronized (NamedConstants.AD_PAYMENT_MUTEX) {
         JobDataMap jobsDataMap = jec.getMergedJobDataMap();
         HttpClientPool clientPool = (HttpClientPool) jobsDataMap.get(NamedConstants.CLIENT_POOL);
