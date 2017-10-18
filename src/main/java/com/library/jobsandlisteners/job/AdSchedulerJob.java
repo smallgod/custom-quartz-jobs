@@ -15,7 +15,7 @@ import com.library.datamodel.Constants.FetchStatus;
 import com.library.datamodel.Constants.GenerateId;
 import com.library.datamodel.Constants.GenerateIdType;
 import com.library.datamodel.Constants.NamedConstants;
-import com.library.datamodel.Constants.ProgDisplayLayout;
+import com.library.datamodel.Constants.ScreenSplit;
 import com.library.datamodel.Json.GenerateIdRequest;
 import com.library.datamodel.Json.GeneratedIdResponse;
 import com.library.datamodel.Json.AdSetupRequest;
@@ -576,7 +576,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
             long adLength = adProgram.getAdLength();
             int campaignId = adProgram.getCampaignId();
-            ProgDisplayLayout displayLayout = adProgram.getDisplayLayout();
+            ScreenSplit displayLayout = adProgram.getDisplayLayout();
 
             //for small values we can just cast a Long to an int, for large values be ware, we loose precision and accuracy so we don't do it
             long progEntityId = adProgram.getId();

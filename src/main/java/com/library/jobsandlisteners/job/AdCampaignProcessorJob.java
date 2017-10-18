@@ -554,7 +554,7 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 AdClient client = campaignProgram.getClient();
                 Set<AdProgramSlot> adProgSlot = customHibernate.fetchEntities(AdProgramSlot.FETCH_PROG_SLOT, "campaignId", campaignId);
 
-                Set<String> fetchedScreenCodes = GeneralUtils.convertCommaDelStringToSet(campaignProgram.getCampaignScreenCodes());
+                Set<String> fetchedScreenCodes = GeneralUtils.convertCommaDelStringToStringSet(campaignProgram.getCampaignScreenCodes());
 
                 Map<String, Object> screenProperties = new HashMap<>();
                 screenProperties.put("screenId", new HashSet<>(fetchedScreenCodes));
