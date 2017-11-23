@@ -731,9 +731,7 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
 
             textList.add(text);
         }
-
         return textList;
-
     }
 
     /**
@@ -784,5 +782,4 @@ public class AdSchedulerJob implements Job, InterruptableJob, ExecutableJob {
     public void interrupt() throws UnableToInterruptJobException {
         logger.warn("Failed to interrupt a Job before deleting it..");
     }
-
 }

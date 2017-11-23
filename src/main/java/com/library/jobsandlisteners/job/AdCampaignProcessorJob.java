@@ -11,6 +11,7 @@ import com.library.datamodel.Constants.EntityName;
 import com.library.datamodel.Constants.ErrorCode;
 import com.library.datamodel.Constants.FetchStatus;
 import com.library.datamodel.Constants.NamedConstants;
+import com.library.datamodel.Constants.ScreenSplit;
 import com.library.datamodel.Json.TimeSlot;
 import com.library.datamodel.model.v1_0.AdCampaignStats;
 import com.library.datamodel.model.v1_0.AdClient;
@@ -400,7 +401,7 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
                 if (isProgramReviewed || !isProgramToBeReviewd) {
                     //if scheduled
-                    if (bookNewCampaignSchedule(program, customHibernate)) {
+                    if (bookNewCampaignSchedule(program, customHibernate, clientPool)) {
                         program.setDescription("Success, campaign has been successfuly queued for scheduling/display");
                         program.setAdSlotReserve(AdSlotsReserve.FIXED);
                         moveCampaignToNextStep(program, CampaignStatus.ACTIVE, customHibernate);
@@ -534,19 +535,68 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
     }
 
     /**
+     * Get the approximate allowed time it takes to download resources to the
+     * media player
+     *
+     * @param displayLayout
+     * @return
+     */
+    long getDownloadTimeDelay(ScreenSplit displayLayout) {
+
+        long delay;
+
+        switch (displayLayout) {
+            case FULL_SCREEN:
+                delay = NamedConstants.DOWNLOAD_TIME_FULLSCREEN;
+                break;
+
+            case FULLSCREEN_TEXT:
+                delay = NamedConstants.DOWNLOAD_TIME_FULLSCREEN;
+                break;
+
+            case THREE_SPLIT:
+                delay = NamedConstants.DOWNLOAD_TIME_3SPLIT;
+                break;
+
+            case TWO_SPLIT:
+                delay = NamedConstants.DOWNLOAD_TIME_3SPLIT;
+                break;
+
+            case TEXT_ONLY:
+                delay = NamedConstants.DOWNLOAD_TIME_TEXT;
+                break;
+
+            default:
+                delay = NamedConstants.DOWNLOAD_TIME_FULLSCREEN;
+                break;
+
+        }
+
+        return delay;
+
+    }
+
+    /**
+     *
      * Schedule a new campaign, booking all the advertising time slots selected
      *
      * @param campaignId internally system generated unique ID assigned to every
      * new campaign
+     *
      * @throws MyCustomException
+     *
      */
-    private boolean bookNewCampaignSchedule(AdProgram campaignProgram, CustomHibernate customHibernate) {
+    private boolean bookNewCampaignSchedule(AdProgram campaignProgram, CustomHibernate customHibernate, HttpClientPool clientPool) {
 
         //AdProgram campaignProgram = customHibernate.fetchEntity(AdProgram.class, "campaignId", campaignId);
         try {
 
+            int earliestScheduleTime = 1000000000;
+            String screenDetail = " _ ";
+
             if (campaignProgram != null) {
 
+                ScreenSplit displayLayout = campaignProgram.getDisplayLayout();
                 long programEntityId = campaignProgram.getId();
                 int campaignId = campaignProgram.getCampaignId();
                 LocalDate startDate = campaignProgram.getStartAdDate();
@@ -568,6 +618,8 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                     MyCustomException error = GeneralUtils.getSingleError(ErrorCode.BAD_REQUEST_ERR, errorDescription, errorDetails);
                     throw error;
                 }
+
+                int downloadDelay = (int) getDownloadTimeDelay(displayLayout);
 
                 Set<TimeSlot> timeSlots = CampaignUtilities.getProgSlotsHelper(adProgSlot);
 
@@ -613,12 +665,12 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                         //add all delays to get a 'near' perfect schedule time
                         long timeToNearest = DateUtils.getTimeNowToNearestMinute().getMillisOfDay();
                         long timeNow = DateUtils.getTimeNow().getMillisOfDay();
-                        int millisOfDayNow = (int) (timeToNearest + approvalDelay + NamedConstants.SYSTEM_SCHEDULE_DELAY_MILLIS);
+                        int millisOfDayNow = (int) timeToNearest + downloadDelay;
 
                         logger.debug("Time Now            : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(timeNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + timeNow);
                         logger.debug("Time Now to nearest : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(timeToNearest, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + timeToNearest);
                         logger.debug("Approval Delay      : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(approvalDelay, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + approvalDelay);
-                        logger.debug("System   Delay      : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(NamedConstants.SYSTEM_SCHEDULE_DELAY_MILLIS, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + NamedConstants.SYSTEM_SCHEDULE_DELAY_MILLIS);
+                        logger.debug("Download Delay      : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(downloadDelay, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + NamedConstants.SYSTEM_SCHEDULE_DELAY_MILLIS);
                         logger.debug("Time now with approval delay + schedule delay : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(millisOfDayNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + millisOfDayNow);
 
                         LocalDate dateOfAd = DateUtils.addDaysToLocalDate(startDate, day);
@@ -628,12 +680,8 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                         if (adTimeSlot.isIsInstant()) {
 
                             preferredTimeInMillis = millisOfDayNow;
-                            logger.debug("Instant Time Slots dont need allowed days! proceed to schedule ad");
 
                         } else if (CampaignUtilities.canAdvertiseOnThisDay(dateOfAd, allowedAdDays)) {
-
-                            logger.info("Scheduling Advert on Date: " + dateOfAd);
-                            logger.info("Scheduling Advert on Day : " + DayOfWeek.of(dateOfAd.getDayOfWeek()));
 
                             //deal with a client who has chosen a time slot in the past today e.g. time is midday and time slot chosen ends at 11.59am
                             boolean slotInThePast = CampaignUtilities.isSlotInThePast(millisOfDayNow, slotStartTime, slotEndTime, dateOfAd);
@@ -653,7 +701,7 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
                                 } else {
                                     //schedule at start of time slot
-                                    preferredTimeInMillis = (int) (slotStartTime + approvalDelay + NamedConstants.SYSTEM_SCHEDULE_DELAY_MILLIS);
+                                    preferredTimeInMillis = slotStartTime + downloadDelay;
 
                                 }
 
@@ -662,18 +710,18 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
                                 //check to make sure chosen hour is not in the past of this time slot
                                 LocalTime preferredLocalTime = new LocalTime(preferredHour, 0); //until we let users enter the minute part, for now it will be zero (0)
-                                preferredTimeInMillis = (int) (preferredLocalTime.getMillisOfDay() + approvalDelay + NamedConstants.SYSTEM_SCHEDULE_DELAY_MILLIS);
+                                preferredTimeInMillis = preferredLocalTime.getMillisOfDay() + downloadDelay;
 
                                 if (preferredTimeInMillis < millisOfDayNow) {
 
                                     //preferred time is within slot but in the past, and time now is within slot time, 
                                     //change it to tine now
                                     if (millisOfDayNow > slotStartTime) {
-                                        preferredTimeInMillis = millisOfDayNow;
+                                        preferredTimeInMillis = millisOfDayNow + downloadDelay;
 
                                     } //preferred time is within slot and in the past, but time now is before slot time, change it to slot start time
                                     else {
-                                        preferredTimeInMillis = (int) (slotStartTime + approvalDelay + NamedConstants.SYSTEM_SCHEDULE_DELAY_MILLIS);
+                                        preferredTimeInMillis = slotStartTime + downloadDelay;
                                     }
                                 }
                             }
@@ -743,7 +791,10 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                                             if (!scheduleTimes.contains(relocatedTimeInMillis)) {
 
                                                 mapOfScheduleAndProgIds.put(relocatedTimeInMillis, progIdWithConflictSched);
-                                                logger.info("Re-assigned program Entity Id: " + progIdWithConflictSched + ", a new slot: " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(relocatedTimeInMillis, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT));
+                                                String relocatedTimeStr = DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(relocatedTimeInMillis, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT);
+                                                logger.info("Re-assigned program Entity Id: " + progIdWithConflictSched + ", a new slot: " + relocatedTimeStr);
+
+                                                //send SMS about to user with new display time
                                                 break;
                                             }
 
@@ -769,6 +820,7 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
 
                             }
 
+                            //send SMS here with display time
                             logger.debug("Adding schedule for schedId    : " + adScreen.getId());
                             logger.debug("Date of schedule               : " + dateOfAd);
                             logger.debug("Preferred time in milliseconds : " + preferredTimeInMillis);
@@ -776,6 +828,11 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                             logger.debug("Slot start-time in milliseconds: " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(slotStartTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + slotStartTime);
                             logger.debug("Slot end-time in milliseconds  : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(slotEndTime, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + slotEndTime);
                             logger.debug("Time now (with delays)         : " + DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(millisOfDayNow, DateTimeZone.UTC), NamedConstants.HOUR_MINUTE_SEC_FORMAT) + " - in millis: " + millisOfDayNow);
+
+                            earliestScheduleTime = Math.min(preferredTimeInMillis, earliestScheduleTime);
+                            if (earliestScheduleTime == preferredTimeInMillis) {
+                                screenDetail = adScreen.getScreenId();
+                            }
 
                         }//end for-loop -> screens
 
@@ -789,6 +846,12 @@ public class AdCampaignProcessorJob implements Job, InterruptableJob, Executable
                 MyCustomException error = GeneralUtils.getSingleError(ErrorCode.DATABASE_ERR, errorDescription, errorDetails);
                 throw error;
             }
+            
+            
+
+            String time = DateUtils.convertLocalTimeToString(DateUtils.convertMillisToLocalTime(earliestScheduleTime, NamedConstants.KAMPALA_DATE_TIME_ZONE), NamedConstants.HOUR_MINUTE_SEC_FORMAT);
+            SMSSenderUtils.generateAndSendCampaignScheduledMsg(campaignProgram.getCampaignId(), time,
+                    campaignProgram.getClient().getAdUser().getPrimaryPhone(), clientPool);
 
             return Boolean.TRUE;
 
